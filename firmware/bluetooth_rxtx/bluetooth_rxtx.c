@@ -45,7 +45,7 @@ const char compile_info[] =
 /* hopping stuff */
 volatile uint8_t  hop_mode = HOP_NONE;
 volatile uint8_t  do_hop = 0;                  // set by timer interrupt
-volatile uint16_t channel = 2441;
+volatile uint16_t channel = 2408; //sopan
 volatile uint16_t hop_direct_channel = 0;      // for hopping directly to a channel
 volatile uint16_t hop_timeout = 158;
 volatile uint16_t requested_channel = 0;
@@ -72,6 +72,25 @@ volatile uint16_t low_freq = 2400;
 volatile uint16_t high_freq = 2483;
 volatile int8_t rssi_threshold = -30;  // -54dBm - 30 = -84dBm
 
+/* This is specific to BLE scanning in connected state */
+static uint16_t eindex = 0;
+static uint16_t time_array1[16]; // Array that saves time of appearance of the BLE connection in the specified channel index
+static uint16_t time_array2[16];
+static uint16_t time_array3[16];
+static u8 count1, count2, count3, sync_count = 0; // Some variables used for counting and and maintaing array index
+u8 idx1 = 0; // channel index to start sniffing to
+u8 idx2 = 1; // channel index to jump next from idx1
+u8 idx3 = 2; // channel index to jump next from idx2
+static uint16_t ch_map_hopped[37], remapped_ch[37];
+static u8 mapped = 0;
+static u8 total_channel = 0;
+static u8 ch_count1 = 0;
+static u8 hopping_channel, channel_hopped = 0;
+static u8 do_count = 1;
+u16 time1, index1 = 0;
+static u8 remapped = 0;
+
+
 /* Generic TX stuff */
 generic_tx_packet tx_pkt;
 
@@ -94,6 +113,8 @@ le_state_t le = {
 	.target_set = 0,
 	.last_packet = 0,
 };
+
+le_channel_remapping_t pending_remapping, remapping;
 
 typedef struct _le_promisc_active_aa_t {
 	u32 aa;
@@ -854,6 +875,7 @@ void DMA_IRQHandler(void) {
 
 void legacy_DMA_IRQHandler()
 {
+
 	if ( mode == MODE_RX_SYMBOLS
 	   || mode == MODE_BT_FOLLOW
 	   || mode == MODE_SPECAN
@@ -1155,6 +1177,7 @@ void le_transmit(u32 aa, u8 len, u8 *data)
 	cc2400_set(INT,     0x0014);    // FIFO_THRESHOLD: 20 bytes
 
 	// set sync word to bit-reversed AA
+
 	cc2400_set(SYNCL,   sync & 0xffff);
 	cc2400_set(SYNCH,   (sync >> 16) & 0xffff);
 
@@ -1216,7 +1239,8 @@ void le_jam(void) {
 /* TODO - return whether hop happened, or should caller have to keep
  * track of this? */
 void hop(void)
-{
+{   
+    //static count = 0;
 	do_hop = 0;
 	last_hop = clkn;
 
@@ -1250,9 +1274,48 @@ void hop(void)
 	else if (hop_mode == HOP_BLUETOOTH) {
 		channel = next_hop(clkn);
 	}
-
+	//Sopan Sarkar
 	else if (hop_mode == HOP_BTLE) {
 		channel = btle_next_hop(&le);
+        u8 index = btle_channel_index(channel);
+
+        if(mapped == 1){
+            if(ch_map_hopped[index] != 1){
+                u8 index2 = index % total_channel;
+                channel = remapped_ch[index2];
+				remapped = 1;
+            }
+			else {
+				remapped = 0;		
+			}
+            hopping_channel++; 
+///////////////////////////////////////////////// added
+			if(channel_hopped > 0){
+			    if(abs(hopping_channel - channel_hopped) > 3 && remapped == 0){
+			        debug_printf("recalculating ch map %d\n",abs(hopping_channel - channel_hopped));
+			        mapped = 0;
+			        ch_count1 = 0;
+			        total_channel = 0;
+			        hopping_channel = 0;
+			        channel_hopped = 0;
+			        do_count = 1;
+			        memset(ch_map_hopped, 0, sizeof ch_map_hopped);
+			    }
+			    hopping_channel = 0;
+			    channel_hopped = 0;
+			}
+////////////////////////////////////////////////// added
+            if(hopping_channel> 37){
+               hopping_channel = 0;
+               channel_hopped = 0;             
+            }     
+        }
+        // debug_printf("Channel: %d Mapped: %d\n", btle_channel_index(channel), mapped);
+        /*
+        else if(mapped == 2){
+            index = le_map_channel(index, &remapping);
+            channel = btle_channel_index_to_phys(index);  
+        }*/
 	}
 
 	else if (hop_mode == HOP_DIRECT) {
@@ -1519,6 +1582,8 @@ void reset_le() {
 	le.win_offset = 0;
 
 	le.update_pending = 0;
+    // channel_map_update_pending = 0;
+    // channel_map_update_instant = 0;
 	le.update_instant = 0;
 	le.interval_update = 0;
 	le.win_size_update = 0;
@@ -1537,6 +1602,7 @@ void reset_le_promisc(void) {
 void bt_generic_le(u8 active_mode)
 {
 	u8 hold;
+  
 	int i, j;
 	int8_t rssi, rssi_at_trigger;
 
@@ -1561,6 +1627,7 @@ void bt_generic_le(u8 active_mode)
 	hold = 0;
 
 	while (requested_mode == active_mode) {
+
 		if (requested_channel != 0) {
 			cc2400_strobe(SRFOFF);
 			while ((cc2400_status() & FS_LOCK)); // need to wait for unlock?
@@ -1661,6 +1728,7 @@ void bt_generic_le(u8 active_mode)
 	cc2400_idle();
 	dio_ssp_stop();
 	cs_trigger_disable();
+
 }
 
 
@@ -1786,8 +1854,13 @@ void bt_le_sync(u8 active_mode)
 
 		RXLED_SET;
 		packet_cb((uint8_t *)packet);
-
-		// disable USB interrupts while we touch USB data structures
+        if(btle_channel_index(channel) == idx3){
+            count3++;  
+            if(count3 > count2-1){
+                count3 = 0;
+            }      
+        }
+		// disable USB interrupts while we tpacketouch USB data structures
 		ICER0 = ICER0_ICE_USB;
 		enqueue(LE_PACKET, (uint8_t *)packet);
 		ISER0 = ISER0_ISE_USB;
@@ -1935,126 +2008,81 @@ int cb_follow_le() {
 
 	return 1;
 }
+//sopan
+u8 rearrange_channel(uint16_t array[]){
+    
+    static u8 m, n = 0;
+    static u16 a = 0;
 
+    for(m=0; m< total_channel; ++m){
+        for(n=m+1; n<total_channel; ++n){
+            if(array[m] > array[n]){
+                a = array[m];
+                array[m] = array[n];
+                array[n] = a;
+            }            
+        }
+    }
+    hopping_channel = 0;
+    channel_hopped = 0;
+    return 1;
+}
 /**
  * Called when we receive a packet in connection following mode.
  */
+
+#define DIVIDE_ROUND(N, D) ((N) + (D)/2) / (D)
+
 void connection_follow_cb(u8 *packet) {
-	int i;
-	u32 aa = 0;
 
-#define ADV_ADDRESS_IDX 0
-#define HEADER_IDX 4
-#define DATA_LEN_IDX 5
-#define DATA_START_IDX 6
+    u8 index = btle_channel_index(channel);
 
-	// u8 *adv_addr = &packet[ADV_ADDRESS_IDX];
-	u8 header = packet[HEADER_IDX];
-	u8 *data_len = &packet[DATA_LEN_IDX];
-	u8 *data = &packet[DATA_START_IDX];
-	// u8 *crc = &packet[DATA_START_IDX + *data_len];
+    if(ch_count1 < 74 && ch_map_hopped[index] != 1){
+        ch_map_hopped[index] = 1;
+        remapped_ch[total_channel] = channel;
+        debug_printf("%d,", index);
+        total_channel++;
+    }
+    else if(ch_count1 == 74){
+        debug_printf("\n");
+        le_promisc_state(2, &le.conn_interval, 2);
+        le_promisc_state(3, &le.channel_increment, 1);
+        ch_count1++;
+        do_count = 0;
+        mapped = rearrange_channel(remapped_ch);
+        hopping_channel = 0;
+        channel_hopped = 0;
+    }
 
-	if (le.link_state == LINK_CONN_PENDING) {
-		// We received a packet in the connection pending state, so now the device *should* be connected
-		le.link_state = LINK_CONNECTED;
-		le.conn_epoch = clkn;
-		le.interval_timer = le.conn_interval - 1;
-		le.conn_count = 0;
-		le.update_pending = 0;
+    else if(mapped == 1){
+            channel_hopped++;
+            if(abs(hopping_channel - channel_hopped) > 3 && remapped == 0){
+                debug_printf("recalculating ch map %d\n",abs(hopping_channel - channel_hopped));
+                mapped = 0;
+                ch_count1 = 0;
+                total_channel = 0;
+                hopping_channel = 0;
+                channel_hopped = 0;
+                do_count = 1;
+                memset(ch_map_hopped, 0, sizeof ch_map_hopped);
+            }
+            hopping_channel = 0;
+            channel_hopped = 0;
+     }
 
-		// hue hue hue
-		if (jam_mode != JAM_NONE)
-			le_jam_count = JAM_COUNT_DEFAULT;
 
-	} else if (le.link_state == LINK_CONNECTED) {
-		u8 llid =  header & 0x03;
+    else if(mapped == 1){
+            channel_hopped++;
+     }
 
-		// Apply any connection parameter update if necessary
-		if (le.update_pending && le.conn_count == le.update_instant) {
-			// This is the first packet received in the connection interval for which the new parameters apply
-			le.conn_epoch = clkn;
-			le.conn_interval = le.interval_update;
-			le.interval_timer = le.interval_update - 1;
-			le.win_size = le.win_size_update;
-			le.win_offset = le.win_offset_update;
-			le.update_pending = 0;
-		}
-
-		if (llid == 0x03 && data[0] == 0x00) {
-			// This is a CONNECTION_UPDATE_REQ.
-			// The host is changing the connection parameters.
-			le.win_size_update = packet[7];
-			le.win_offset_update = packet[8] + ((u16)packet[9] << 8);
-			le.interval_update = packet[10] + ((u16)packet[11] << 8);
-			le.update_instant = packet[16] + ((u16)packet[17] << 8);
-			if (le.update_instant - le.conn_count < 32767)
-				le.update_pending = 1;
-		}
-
-	} else if (le.link_state == LINK_LISTENING) {
-		u8 pkt_type = packet[4] & 0x0F;
-		if (pkt_type == 0x05) {
-			uint16_t conn_interval;
-
-			// ignore packets with incorrect length
-			if (*data_len != 34)
-				return;
-
-			// conn interval must be [7.5 ms, 4.0s] in units of 1.25 ms
-			conn_interval = (packet[29] << 8) | packet[28];
-			if (conn_interval < 6 || conn_interval > 3200)
-				return;
-
-			// This is a connect packet
-			// if we have a target, see if InitA or AdvA matches
-			if (le.target_set &&
-				memcmp(le.target, &packet[6], 6) &&  // Target address doesn't match Initiator.
-				memcmp(le.target, &packet[12], 6)) {  // Target address doesn't match Advertiser.
-				return;
-			}
-
-			le.link_state = LINK_CONN_PENDING;
-			le.crc_verify = 0; // we will drop many packets if we attempt to filter by CRC
-
-			for (i = 0; i < 4; ++i)
-				aa |= packet[18+i] << (i*8);
-			le_set_access_address(aa);
-
-#define CRC_INIT (2+4+6+6+4)
-			le.crc_init = (packet[CRC_INIT+2] << 16)
-						| (packet[CRC_INIT+1] << 8)
-						|  packet[CRC_INIT+0];
-			le.crc_init_reversed = rbit(le.crc_init);
-
-#define WIN_SIZE (2+4+6+6+4+3)
-			le.win_size = packet[WIN_SIZE];
-
-#define WIN_OFFSET (2+4+6+6+4+3+1)
-			le.win_offset = packet[WIN_OFFSET];
-
-#define CONN_INTERVAL (2+4+6+6+4+3+1+2)
-			le.conn_interval = (packet[CONN_INTERVAL+1] << 8)
-							 |  packet[CONN_INTERVAL+0];
-
-#define CHANNEL_INC (2+4+6+6+4+3+1+2+2+2+2+5)
-			le.channel_increment = packet[CHANNEL_INC] & 0x1f;
-			le.channel_idx = le.channel_increment;
-
-			// Hop to the initial channel immediately
-			do_hop = 1;
-		}
-	}
+    if(do_count == 1){
+        ch_count1++;
+    }
 }
 
 void le_phy_main(void);
 void bt_follow_le() {
 	le_phy_main();
-
-	/* old method
-	reset_le();
-	packet_cb = connection_follow_cb;
-	bt_le_sync(MODE_BT_FOLLOW_LE);
-	*/
 }
 
 // issue state change message
@@ -2069,87 +2097,296 @@ void le_promisc_state(u8 type, void *data, unsigned len) {
 }
 
 // divide, rounding to the nearest integer: round up at 0.5.
-#define DIVIDE_ROUND(N, D) ((N) + (D)/2) / (D)
 
-void promisc_recover_hop_increment(u8 *packet) {
-	static u32 first_ts = 0;
-	if (channel == 2404) {
-		first_ts = CLK100NS;
-		hop_direct_channel = 2406;
-		do_hop = 1;
-	} else if (channel == 2406) {
-		u32 second_ts = CLK100NS;
-		if (second_ts < first_ts)
-			second_ts += 3276800000; // handle rollover
-		// Number of channels hopped between previous and current timestamp.
-		u32 channels_hopped = DIVIDE_ROUND(second_ts - first_ts,
-										   le.conn_interval * LE_BASECLK);
-		if (channels_hopped < 37) {
-			// Get the hop increment based on the number of channels hopped.
-			le.channel_increment = hop_interval_lut[channels_hopped];
-			le.interval_timer = le.conn_interval / 2;
-			le.conn_count = 0;
-			le.conn_epoch = 0;
-			do_hop = 0;
-			// Move on to regular connection following.
-			le.channel_idx = (1 + le.channel_increment) % 37;
-			le.link_state = LINK_CONNECTED;
-			le.crc_verify = 0;
-			hop_mode = HOP_BTLE;
-			packet_cb = connection_follow_cb;
-			le_promisc_state(3, &le.channel_increment, 1);
 
-			if (jam_mode != JAM_NONE)
-				le_jam_count = JAM_COUNT_DEFAULT;
-
-			return;
-		}
-		hop_direct_channel = 2404;
-		do_hop = 1;
-	}
-	else {
-		hop_direct_channel = 2404;
-		do_hop = 1;
-	}
-}
-
+//sopan
 void promisc_recover_hop_interval(u8 *packet) {
+    
+    // for hop interval
 	static u32 prev_clk = 0;
+    static u32 seq[18];
+	static uint16_t count, sindex = 0;
+	static uint8_t calc = 1;
+	static int interval = 0;
+    static uint8_t step, match = 0;
+
+    // for hop increment
+    static u32 first_ts = 0;
+    u8 hops = 0;
+    u32 diff = 0;
+    u32 channels_hopped = 0;
+    time_array1[0] = 0;
+
+
+
+    // for increment
+    
+    if(count > 8){
+        count = 0;
+        memset(seq, 0, sizeof seq);    
+    }
 
 	u32 cur_clk = CLK100NS;
 	if (cur_clk < prev_clk)
 		cur_clk += 3267800000; // handle rollover
 	u32 clk_diff = cur_clk - prev_clk;
-	u16 obsv_hop_interval; // observed hop interval
+
+	static u16 obsv_hop_interval; // observed hop interval
+    u16 hop_diff;
 
 	// probably consecutive data packets on the same channel
-	if (clk_diff < 2 * LE_BASECLK)
+	if (clk_diff < 6 * LE_BASECLK)
 		return;
+	
+    if(match == 0){
+	    seq[count] = (clk_diff/10000);
+    }
+    //debug_printf("s = %d\n",seq[count]);
+	if(calc == 0){
+		++sindex;
+        hop_diff = abs(seq[sindex] - (clk_diff/10000));
+        interval += (clk_diff/10000);
+        //debug_printf("sn=%d c=%d si =%d ei=%d cnt=%d interval=%d step=%d\n",seq[sindex],(clk_diff/10000),sindex,eindex,count,interval,step);
+		if(hop_diff <= 10){		
+            if(step < 1){
+                time_array1[sindex] = interval;
+            }
+			if(sindex == eindex){
+                match = 1;
+                sindex = 0;
+                count = 0;
+                step = step + 1;
+                if(step >= 3){
+                    calc = 2;
+                }
+			}
+        }
 
-	if (clk_diff < le_promisc.smallest_hop_interval)
-		le_promisc.smallest_hop_interval = clk_diff;
-
-	obsv_hop_interval = DIVIDE_ROUND(le_promisc.smallest_hop_interval, 37 * LE_BASECLK);
-
-	if (le.conn_interval == obsv_hop_interval) {
-		// 5 consecutive hop intervals: consider it legit and move on
-		++le_promisc.consec_intervals;
-		if (le_promisc.consec_intervals == 5) {
-			packet_cb = promisc_recover_hop_increment;
-			hop_direct_channel = 2404;
-			hop_mode = HOP_DIRECT;
-			do_hop = 1;
-			le_promisc_state(2, &le.conn_interval, 2);
-		}
-	} else {
-		le.conn_interval = obsv_hop_interval;
-		le_promisc.consec_intervals = 0;
+		else{
+			interval = 0;
+            sindex = 0;
+            memset(seq, 0, sizeof seq);
+            memset(time_array1, 0, sizeof time_array1);        
+			calc = 1;
+            count = 1;
+            step = 0;
+            match = 0;
+            seq[count] = (clk_diff/10000);
+			}
 	}
 
+	if((count > 1) && (calc == 1)){
+        hop_diff = abs(seq[1] - (clk_diff/10000));
+		if(hop_diff <= 10){
+			interval += (clk_diff/10000);
+			calc = 0;
+			sindex = 1;
+			eindex = count - 1;
+            if(sindex == eindex){
+                match = 1;
+                sindex = 0;
+                count = 0;
+                step = step + 1;
+			}
+            time_array1[sindex] = interval;
+            //debug_printf("s1=%d c=%d si =%d ei=%d cnt=%d interval=%d step=%d\n",seq[1],(clk_diff/10000),sindex,eindex,count, interval, step);
+		}
+	}
+
+    if(calc == 2){
+        uint16_t val = DIVIDE_ROUND(interval,step);
+        obsv_hop_interval = DIVIDE_ROUND(val, 37);
+        debug_printf("Hop interval: %d\n",obsv_hop_interval);
+        le.conn_interval = DIVIDE_ROUND(obsv_hop_interval, 1.25);
+        first_ts = CLK100NS; 
+        hop_direct_channel = btle_channel_index_to_phys(idx2);
+		hop_mode = HOP_DIRECT;
+	    do_hop = 1;
+        calc = 3;
+    }
+
+    // for increment
+
+    else if (channel == btle_channel_index_to_phys(idx2) && calc == 3) {
+		u32 second_ts = CLK100NS;
+		if (second_ts < first_ts){
+			second_ts += 3276800000;
+        }
+
+        diff = (second_ts - first_ts);
+        time_array2[count1] = diff/10000;//
+		channels_hopped = DIVIDE_ROUND(diff,le.conn_interval * LE_BASECLK);
+
+		if (channels_hopped > 37) {
+            first_ts = CLK100NS; 
+            hop_direct_channel = btle_channel_index_to_phys(idx3);
+		    hop_mode = HOP_DIRECT;
+	        do_hop = 1;
+            calc = 4;
+		}
+		do_hop = 1;
+        //debug_printf("Count1 %d ch %d diff %d int %d arr %d\n", count1, channels_hopped, diff, le.conn_interval, time_array2[count1]);
+        ++count1;
+	}
+    
+    else if(channel == btle_channel_index_to_phys(idx3) && calc == 4){
+        u32 second_ts2 = CLK100NS;
+		if (second_ts2 < first_ts){
+			second_ts2 += 3276800000;
+        }
+
+        diff = (second_ts2 - first_ts);
+        time_array3[count2] = ((diff/10000)+ time_array2[0])%(37*obsv_hop_interval);
+		channels_hopped = DIVIDE_ROUND(diff,le.conn_interval * LE_BASECLK);
+
+		if (channels_hopped > 37) {
+            calc = 5;
+		}
+		do_hop = 1;
+        //debug_printf("Count2 %d ch %d diff %d int %d arr %d\n", count2, channels_hopped, diff, le.conn_interval, time_array3[count2]);
+        ++count2;
+    }
+
+    else if(calc == 5){
+
+        static u8 index = 0; 
+        static u16 ch_hop[32];
+        static u16 diff = 0;
+        static u16 max_count = 1;
+        static u16 curr_count = 0;
+        static u16 max_val; 
+        static u16 val;
+        static u8 ta1, ta2, ta3 = 0;
+        static u8 i, j = 0;
+        static u8 hops,hops2 = 0;
+
+        for( ta1 = 0; ta1 < eindex; ta1++){
+            for( ta2 = 0; ta2 < count1-1; ta2++){
+                if(time_array1[ta1] > time_array2[ta2]){
+                    diff = (le.conn_interval*1.25*37) - time_array1[ta1] + time_array2[ta2];
+                }
+                else {
+                    diff = time_array2[ta2] - time_array1[ta1];
+                }
+
+                u8 channels_hopped = DIVIDE_ROUND(diff,le.conn_interval*1.25);
+                if((idx2 - idx1) > 0){
+                    hops = ((idx2 - idx1)*hop_interval_lut[channels_hopped])%37;
+                }
+                else{
+                    hops = ((37 + idx2 - idx1)*hop_interval_lut[channels_hopped])%37;
+                }
+                if ((hops > 4) && (hops < 17)){
+                //added
+                    for( ta3 = 0; ta3 < count2 - 1; ta3++){
+                        if(time_array2[ta2] > time_array3[ta3]){
+                            diff = (le.conn_interval*1.25*37) - time_array2[ta2] + time_array3[ta3];
+                        }
+                        else {
+                            diff = time_array3[ta3] - time_array2[ta2];
+                        }
+                        u8 channels_hopped = DIVIDE_ROUND(diff,le.conn_interval*1.25);
+                        if((idx3 - idx2) > 0){
+                            hops2 = ((idx3 - idx2)*hop_interval_lut[channels_hopped])%37;
+                        }
+                        else{
+                            hops2 = ((37 + idx3 - idx2)*hop_interval_lut[channels_hopped])%37;
+                        }
+                        if (hops2 == hops){
+                              ch_hop[index] = hops;
+                              sync_count = ta3+1;
+                              index += 1;
+                        }
+                    }
+                //added
+                     ch_hop[index] = hops;
+                     index += 1;
+                }
+            }
+        }
+/*      
+        for( ta1 = 0; ta1 < count1 - 1; ta1++){
+            for( ta2 = 0; ta2 < count2 - 1; ta2++){
+                if(time_array2[ta1] > time_array3[ta2]){
+                    diff = (le.conn_interval*1.25*37) - time_array2[ta1] + time_array3[ta2];
+                }
+                else {
+                    diff = time_array3[ta2] - time_array2[ta1];
+                }
+
+                u8 channels_hopped = DIVIDE_ROUND(diff,le.conn_interval*1.25);
+                if((idx3 - idx2) > 0){
+                    hops = ((idx3 - idx2)*hop_interval_lut[channels_hopped])%37;
+                }
+                else{
+                    hops = ((37 + idx3 - idx2)*hop_interval_lut[channels_hopped])%37;
+                }
+                if ((hops > 4) && (hops < 17)){
+                      ch_hop[index] = hops;
+                      index += 1;
+                }
+            }
+        }
+*/
+        for( j = 0; j< index; j++){
+            val = ch_hop[j];
+            for( i = j; i < index; i++){
+                if(val == ch_hop[i]){
+                    curr_count++;
+                 }
+            }
+            if(curr_count > max_count){
+                max_count = curr_count;
+                max_val = val;
+            }
+            curr_count = 0;
+        }
+        le.channel_increment = max_val;
+        debug_printf("Increment: %d Interval: %d %d out of %d\n",le.channel_increment,le.conn_interval,max_count,index);
+        calc = 6;
+    
+        /*le.channel_increment = max_val;
+        debug_printf("Increment: %d Interval: %d %d out of %d\n",le.channel_increment,le.conn_interval,max_count,index);
+        le.interval_timer = le.conn_interval / 2;
+        le.conn_count = 0;
+        le.conn_epoch = 0;
+        le.channel_idx = (idx3 + le.channel_increment) % 37;
+        le.link_state = LINK_CONNECTED;
+        le.crc_verify = 0;
+        hop_mode = HOP_BTLE;
+        packet_cb = connection_follow_cb;
+        le_promisc_state(2, &le.conn_interval, 2);
+        le_promisc_state(3, &le.channel_increment, 1);    
+        return;*/
+    }
+    else if(calc == 6){
+        debug_printf("c3: %d c2: %d syc: %d\n",count3, count2-1, sync_count);
+        if(count3  == sync_count){
+
+            le.interval_timer = le.conn_interval / 2;
+            le.conn_count = 0;
+            le.conn_epoch = 0;
+            le.channel_idx = (idx3 + le.channel_increment) % 37;
+            le.link_state = LINK_CONNECTED;
+            le.crc_verify = 0;
+            hop_mode = HOP_BTLE;
+            packet_cb = connection_follow_cb;
+            le_promisc_state(2, &le.conn_interval, 2);
+            le_promisc_state(3, &le.channel_increment, 1);    
+            return;
+        }
+    }
+
+    // for increment
+	
+	++count;
 	prev_clk = cur_clk;
 }
 
+
+//sopan
 void promisc_follow_cb(u8 *packet) {
+    debug_printf("promisc_follow_cb\n");
 	int i;
 
 	// get the CRCInit
@@ -2169,6 +2406,7 @@ void promisc_follow_cb(u8 *packet) {
 
 // called when we see an AA, add it to the list
 void see_aa(u32 aa) {
+    //debug_printf("see_aa\n");
 	int i, max = -1, killme = -1;
 	for (i = 0; i < AA_LIST_SIZE; ++i)
 		if (le_promisc.active_aa[i].aa == aa) {
@@ -2189,6 +2427,7 @@ void see_aa(u32 aa) {
 
 /* le promiscuous mode */
 int cb_le_promisc(char *unpacked) {
+    
 	int i, j, k;
 	int idx;
 
@@ -2272,25 +2511,31 @@ int cb_le_promisc(char *unpacked) {
 		if (le_promisc.active_aa[i].count > 3) {
 			le_set_access_address(le_promisc.active_aa[i].aa);
 			data_cb = cb_follow_le;
+            //debug_printf("calling promisc_follow_cb\n");
 			packet_cb = promisc_follow_cb;
 			le.crc_verify = 0;
+            le.target_set = 1;
 			le_promisc_state(0, &le.access_address, 4);
 			// quit using the old stuff and switch to sync mode
-			return 0;
 		}
 	}
-
 	return 1;
 }
 
 void bt_promisc_le() {
+    //static inc = 0;
+    //u8 channel_37[37] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,242,5,26,27,28,29,30,31,32,33,34,35,36};
+
 	while (requested_mode == MODE_BT_PROMISC_LE) {
-		reset_le_promisc();
-
-		// jump to a random data channel and turn up the squelch
-		if ((channel & 1) == 1)
-			channel = 2440;
-
+        //if(check_channel == 0 && channel_37[inc] != idx2 && channel_37[inc] != idx3){
+		    reset_le_promisc();
+            //idx1 = channel_37[inc];
+		    // jump to a random data channel and turn up the squelch
+		    if ((channel & 1) == 1){
+			    channel = btle_channel_index_to_phys(idx1);// sopan
+                debug_printf("Channel: %d\n", channel);
+            }
+        //}
 		// if the PC hasn't given us AA, determine by listening
 		if (!le.target_set) {
 			// cs_threshold_req = -80;
@@ -2307,6 +2552,11 @@ void bt_promisc_le() {
 		packet_cb = promisc_follow_cb;
 		le.crc_verify = 0;
 		bt_le_sync(MODE_BT_PROMISC_LE);
+        
+        /*if(inc >= 36){
+            inc = 0;
+        }
+        inc++;*/
 	}
 }
 
