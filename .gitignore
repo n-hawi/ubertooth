@@ -54,4 +54,6 @@ ID
 *.sublime-workspace
 .vscode
 .idea
-
+host/cmake-build-debug
+host/.idea
+firmware/.idea
