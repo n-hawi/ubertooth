@@ -1,4 +1,5 @@
 /*
+ * Copyright 2016 Air Force Institute of Technology, U.S. Air Force
  * Copyright 2010-2013 Michael Ossmann
  * Copyright 2011-2013 Dominic Spill
  *
