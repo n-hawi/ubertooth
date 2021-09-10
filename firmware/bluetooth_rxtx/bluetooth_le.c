@@ -51,6 +51,37 @@ uint8_t btle_channel_index(uint16_t channel) {
 	return idx;
 }
 
+// BLE-Multi ++++++++++++++
+u8 btle_afh_channel_index(le_state_t* l){
+	u8 idx;
+
+	// Is the channel an advertisement channel?
+	if (l->channel_idx == 37 || l->channel_idx == 38 || \
+		l->channel_idx == 39){
+			idx = l->channel_idx;
+		}
+
+	// Is the unmapped channel in use?
+	else if (l->channel_map[l->channel_idx] != 0x00) {
+		idx = l->channel_idx;
+	}
+
+	// Unmapped channel is not used, let's map it to a used channel
+	else {
+		int used_channel_idx = l->channel_idx % l->num_used_channels;
+		int search_idx = -1, i = -1;
+		while (search_idx != used_channel_idx && i < 36) {
+			i++;
+			if (l->channel_map[i] != 0x00) {
+				search_idx++;
+			}
+		}
+		idx = i;
+	}
+	return idx;
+}
+// BLE-Multi --------------
+
 u16 btle_channel_index_to_phys(u8 idx) {
 	u16 phys;
 	if (idx < 11)

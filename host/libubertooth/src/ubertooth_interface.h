@@ -114,6 +114,9 @@ enum ubertooth_usb_commands {
 	UBERTOOTH_LE_SET_ADV_DATA    = 71,
 	UBERTOOTH_RFCAT_SUBCMD       = 72,
 	UBERTOOTH_XMAS               = 73,
+	// BLE Multi +++++++++++++++++++++++++
+	UBERTOOTH_BTLE_MULTI_SNIFFING= 74,
+	// BLE Multi -------------------------
 };
 
 enum rfcat24_subcommands {
@@ -154,6 +157,9 @@ enum hop_mode {
 	HOP_BTLE      = 3,
 	HOP_DIRECT    = 4,
 	HOP_AFH       = 5,
+	// BLE Multi +++++++++++++
+	HOP_BTLE_MULTI= 6,
+	// BLE Multi -------------
 };
 
 enum usb_pkt_status {

@@ -20,6 +20,9 @@
  * Boston, MA 02110-1301, USA.
  */
 
+//#include <bits/stdint-intn.h>
+//#include <cstddef>
+#include <stdint.h>
 #include <string.h>
 
 #include "ubertooth.h"
@@ -38,6 +41,30 @@
 
 #define MIN(x,y)	((x)<(y)?(x):(y))
 #define MAX(x,y)	((x)>(y)?(x):(y))
+// divide, rounding to the nearest integer: round up at 0.5.
+#define DIVIDE_ROUND(N, D) ((N) + (D)/2) / (D)
+
+// BLE-Multi ++++++++++++++
+#define DIVIDE_CEIL(N, D) (1 + ((N-1) / D))
+#define MAX_LINKS 5 				// Max # of links to follow in mut-link LE mode
+#define MAX_INACTIVE_LINK_TIME 5	// in seconds
+#define MAX_NUM_TARGETS 1
+#define MIN_ADV_INTERVALS 3
+#define PACKET_OFFSET 2 			// # of clkn intervals needed to capture one frame
+#define T_IFS 5						// # of clkn intervals until we pass 150us; tuned to 5 which is >>> 150us
+
+#define ADV_ADDRESS_IDX 0
+#define HEADER_IDX 4
+#define DATA_LEN_IDX 5
+#define DATA_START_IDX 6
+#define CRC_INIT (2+4+6+6+4)
+#define WIN_SIZE (2+4+6+6+4+3)
+#define WIN_OFFSET (2+4+6+6+4+3+1)
+#define CONN_INTERVAL (2+4+6+6+4+3+1+2)
+#define CHANNEL_INC (2+4+6+6+4+3+1+2+2+2+2+5)
+
+volatile u32 debug_clk100ns_count = 0;
+// BLE-Multi --------------
 
 /* build info */
 const char compile_info[] =
@@ -96,6 +123,95 @@ le_state_t le = {
 	.last_packet = 0,
 };
 
+// BLE-Multi ++++++++++++++
+// LE Multiple Connection Following Stuff 
+/* 
+ * This structure has thw timers/timeouts: 
+ * 		deciscion_timer  - predetermined timeout that forces the handler to "move on"
+ *		conn_event_timer - calculated timeout, occurs when no packet is received for 150us
+ */
+typedef struct _le_multi_link_hdlr_t {
+	// Container to hold all connection states
+	le_state_t links[MAX_LINKS];
+	// Generic advertisement listener
+	le_state_t adv_link;
+	// Pointer to the connection currenty being followed
+	le_state_t *cur_link;
+	// Number of targets set by the user
+	u8 num_targets;
+	// target MACs for connection following (byte order reversed)
+	u8 targets[MAX_NUM_TARGETS][6];
+	// State of the anchor-capturing SM
+	anchor_state_t cur_anchor_state;
+	// CLK100NS timestamp of latest candidate packet for anchor
+	u32 candidate_anchor;
+	// Enable/disable decision timer
+	int decision_timer_en;
+	// # of CLOCK intervals until we have to make a decision
+	u16 volatile decision_timer;
+	// Enable/disable the conn_event_timer, useful when listening to ADV
+	int conn_event_timer_en;
+	// if 0, the current connection event has invalidated
+	u16 volatile conn_event_timer;
+	// Enable/disable advertising timer
+	int adv_timer_en;
+	// if 0, it's time to move to a different adv channel
+	u16 volatile adv_timer;
+	adv_state_t cur_adv_state;
+	// target MAC for advertisement following (byte order reversed)
+	u8 adv_target[6];
+	// if 1, we should run the scheduler
+	int scheduler_en;
+} le_multi_link_hdlr_t;
+
+le_multi_link_hdlr_t le_hdlr = {
+	.links = {{
+		.access_address = 0x8e89bed6,           // advertising channel access address
+		.synch = 0x6b7d,                        // bit-reversed adv channel AA
+		.syncl = 0x9171,
+		.crc_init  = 0x555555,                  // advertising channel CRCInit
+		.crc_init_reversed = 0xAAAAAA,
+		.crc_verify = 0,
+		.link_state = LINK_INACTIVE,
+		.conn_epoch = 0,
+		.target_set = 0,
+		.last_packet = 0,
+		.channel_map = {0x00,},
+		.num_used_channels = 0,
+		.last_confirmed_event = 0,
+		.next_expected_event = 0,
+		.linger_time = 0,
+		.window_widening = 0,
+	},},
+	.adv_link = {
+		.access_address = 0x8e89bed6,           // advertising channel access address
+		.synch = 0x6b7d,                        // bit-reversed adv channel AA
+		.syncl = 0x9171,
+		.crc_init  = 0x555555,                  // advertising channel CRCInit
+		.crc_init_reversed = 0xAAAAAA,
+		.crc_verify = 0,
+		.link_state = LINK_LISTENING,
+		.channel_idx = 37,
+		.channel_increment = 0,
+		.conn_epoch = 0,
+		.target_set = 0,
+		.last_packet = 0,
+	},
+	.cur_link = NULL,
+	.cur_anchor_state = ANCHOR_SEARCH,
+	.candidate_anchor = 0,
+	.decision_timer = 0,
+	.decision_timer_en = 0,
+	.conn_event_timer_en = 0, // disabled
+	.conn_event_timer = 0,
+	.adv_timer_en = 0,
+	.adv_timer = 0,
+	.cur_adv_state = ADV_SEARCH,
+	.scheduler_en = 1,
+};
+u8 hop_reason = 0;
+// BLE-Multi --------------
+
 typedef struct _le_promisc_active_aa_t {
 	u32 aa;
 	int count;
@@ -117,7 +233,15 @@ le_promisc_state_t le_promisc;
 int le_jam_count = 0;
 
 /* set LE access address */
-static void le_set_access_address(u32 aa);
+static void le_set_access_address(u32 aa, le_state_t *conn);
+
+// BLE Multi +++++++++++++
+void le_multi_reset_interval_timer(le_state_t *link);
+void le_multi_cleanup(void);
+void le_multi_update_adv_state(void);
+void le_multi_scheduler(void);
+void connection_multi_follow_cb(u8 *packet);
+// BLE Multi -------------
 
 typedef int (*data_cb_t)(char *);
 data_cb_t data_cb = NULL;
@@ -128,6 +252,13 @@ packet_cb_t packet_cb = NULL;
 /* Unpacked symbol buffers (two rxbufs) */
 char unpacked[DMA_SIZE*8*2];
 
+/*
+* Function : enqueue
+* −−−−−−−−−−−−−−−−−
+* Puts something in the DMA buffer to send to host.
+* type:
+* buf:
+*/
 static int enqueue(uint8_t type, uint8_t* buf)
 {
 	usb_pkt_rx* f = usb_enqueue();
@@ -143,8 +274,12 @@ static int enqueue(uint8_t type, uint8_t* buf)
 		f->clkn_high = (clkn >> 20) & 0xff;
 		f->clk100ns = CLK100NS;
 	} else {
-		f->clkn_high = idle_buf_clkn_high;
-		f->clk100ns = idle_buf_clk100ns;
+		// BLE-Multi ++++++++++++++
+		//f->clkn_high = idle_buf_clkn_high;
+		//f->clk100ns = idle_buf_clk100ns;
+		f->clkn_high = (clkn >> 20) & 0xff;
+		f->clk100ns = CLK100NS;
+		// BLE-Multi --------------
 		f->channel = (uint8_t)((idle_buf_channel - 2402) & 0xff);
 		f->rssi_min = rssi_min;
 		f->rssi_max = rssi_max;
@@ -160,6 +295,14 @@ static int enqueue(uint8_t type, uint8_t* buf)
 	return 1;
 }
 
+/*
+* Function : enqueue_with_ts
+* −−−−−−−−−−−−−−−−−
+* Puts something in the DMA buffer to send to host, include timestamp.
+* − type :
+* − buf :
+* − ts :
+*/
 int enqueue_with_ts(uint8_t type, uint8_t* buf, uint32_t ts)
 {
 	usb_pkt_rx* f = usb_enqueue();
@@ -187,8 +330,56 @@ int enqueue_with_ts(uint8_t type, uint8_t* buf, uint32_t ts)
 	return 1;
 }
 
+// BLE-Multi ++++++++++++++
+/**
+* Function: debug_log
+* --------------------
+* Send debug messages back to host via DMA queue. Message shows up as the access
+* address of the packet. The DMA queue must already be initialized for this to work!
+* - message:
+*/
+int debug_log(u32 message) {
+	uint8_t type = LE_PACKET;
+	usb_pkt_rx* f = usb_enqueue();
+
+	/* fail if queue is full */
+	if (f == NULL) {
+		status |= FIFO_OVERFLOW;
+		return 0;
+	}
+
+	f->pkt_type = type;
+
+	f->clkn_high = idle_buf_clkn_high;
+	f->clk100ns = idle_buf_clk100ns;
+
+	f->channel = (uint8_t)((channel - 2402) & 0xff);
+	f->rssi_min = rssi_min;
+	f->rssi_max = rssi_max;
+	f->rssi_avg = rssi_get_avg(idle_buf_channel);
+	f->rssi_count = rssi_count;
+	uint32_t* p = (uint32_t*) f->data;
+	p[0] = message;
+	return 1;
+}
+// BLE-Multi --------------
+
+/**
+* Function: vendor_request_handler
+* -----------------------------
+* Respond to requests from host to set global parameters and start sniffing.
+* - request:
+* - request_prarams:
+* - data:
+* - data_len:
+*/
 static int vendor_request_handler(uint8_t request, uint16_t* request_params, uint8_t* data, int* data_len)
 {
+	// BLE-Multi ++++++++++++++
+	uint32_t command[5];
+	uint32_t result[5];
+	uint64_t ac_copy;
+	// BLE-Multi --------------
 	uint32_t clock;
 	size_t length; // string length
 	usb_pkt_rx* p = NULL;
@@ -371,7 +562,10 @@ static int vendor_request_handler(uint8_t request, uint16_t* request_params, uin
 		}
 
 		le_adv_channel = requested_channel;
-		if (mode != MODE_BT_FOLLOW_LE) {
+		// BLE-Multi ++++++++++++++
+		if (mode != MODE_BT_FOLLOW_LE && mode != MODE_BT_MULTIFOLLOW_LE) {
+		// if (mode != MODE_BT_FOLLOW_LE) {
+		// BLE-Multi --------------
 			channel = requested_channel;
 			requested_channel = 0;
 
@@ -556,6 +750,20 @@ static int vendor_request_handler(uint8_t request, uint16_t* request_params, uin
 		cs_threshold_calc_and_set(channel);
 		break;
 
+	// BLE-Multi ++++++++++++++
+	case UBERTOOTH_BTLE_MULTI_SNIFFING:
+		le.do_follow = request_params[0];
+		*data_len = 0;
+
+		do_hop = 0;
+		hop_mode = HOP_BTLE_MULTI;
+		requested_mode = MODE_BT_MULTIFOLLOW_LE;
+
+		usb_queue_init();
+		cs_threshold_calc_and_set(channel);
+		break;
+	// BLE-Multi --------------
+
 	case UBERTOOTH_GET_ACCESS_ADDRESS:
 		for(int i=0; i < 4; i++) {
 			data[i] = (le.access_address >> (8*i)) & 0xff;
@@ -564,7 +772,7 @@ static int vendor_request_handler(uint8_t request, uint16_t* request_params, uin
 		break;
 
 	case UBERTOOTH_SET_ACCESS_ADDRESS:
-		le_set_access_address(data[0] | data[1] << 8 | data[2] << 16 | data[3] << 24);
+		le_set_access_address(data[0] | data[1] << 8 | data[2] << 16 | data[3] << 24, &le);
 		le.target_set = 1;
 		break;
 
@@ -736,10 +944,19 @@ static int vendor_request_handler(uint8_t request, uint16_t* request_params, uin
 	return 1;
 }
 
-/* Update CLKN. */
+/*
+* Function : TIMER0 IRQHandler
+∗ −−−−−−−−−−−−−−−−−
+∗ Handle interrupts triggered by the on−board clock. This function
+∗ serves as the ”driver” for following connections by using timeouts.
+∗ Updates CLKN. 
+*/
 void TIMER0_IRQHandler()
 {
 	if (T0IR & TIR_MR0_Interrupt) {
+		// BLE-Multi ++++++++++++++
+		debug_clk100ns_count++;
+		// BLE-Multi --------------
 
 		clkn += clkn_offset + 1;
 		clkn_offset = 0;
@@ -763,6 +980,7 @@ void TIMER0_IRQHandler()
 			// Only hop if connected
 			if (le.link_state == LINK_CONNECTED && le_clk == 0) {
 				--le.interval_timer;
+				// We reached the # of intervals until a hop is neccessary
 				if (le.interval_timer == 0) {
 					do_hop = 1;
 					++le.conn_count;
@@ -772,6 +990,116 @@ void TIMER0_IRQHandler()
 				}
 			}
 		}
+
+		// BLE-Multi ++++++++++++++
+		// Multi-connection tracking. Here's where we detect that a connection event ends
+		else if (hop_mode == HOP_BTLE_MULTI) {
+			// Decrease the advertisement timer, trigger if enabled
+			if (le_hdlr.adv_timer_en == 1) {
+				--le_hdlr.adv_timer;
+				if (le_hdlr.adv_timer == 0) {
+					le_multi_update_adv_state();
+					do_hop = 1;
+					hop_reason |= F_ADVERTISEMENT;
+				}
+			}
+			// Decrease the connection event timer, trigger if enabled
+			if (le_hdlr.conn_event_timer_en == 1) {
+				--le_hdlr.conn_event_timer;
+				if (le_hdlr.conn_event_timer == 0) {
+					do_hop = 1;
+					hop_reason |= F_CONN_EVENT;
+				}
+			}
+			// Decrease the decision timer, trigger if enabled
+			if (le_hdlr.decision_timer_en == 1) {
+				--le_hdlr.decision_timer;
+				if (le_hdlr.decision_timer == 0) {
+					do_hop = 1;
+					hop_reason |= F_DECISION;
+				}
+			}
+			// Progress all connection interval timers
+			/* If an interval timer expires, we simply increase the connection
+			 * count and reset the interval timer. If the timer changed our
+			 * current link, we'll have to make sure we hop to a new channel.
+			 */
+			le_state_t *l = NULL;
+			for (int i = 0; i < MAX_LINKS; i++) {
+				l = &(le_hdlr.links[i]);
+
+				// if the link is active, decrease its interval timer
+				if (l->link_state != LINK_INACTIVE) {
+					--l->interval_timer;
+					if (l->interval_timer == 0) {
+						// Automatically increase connection count
+						++(l->conn_count);
+
+						// Automatically adjust to proper unmapped channel
+						u8 old_idx = l->channel_idx; // to revert, if needed.
+						l->channel_idx = (l->channel_idx + l->channel_increment) % 37;
+
+						// Apply any connectin parameter update if necessary
+						if (l->update_pending && l->conn_count == l->update_instant) {
+							// Extend previous connection event
+							--(l->conn_count);
+							l-> channel_idx = old_idx;
+
+							// Disable pending update (we're doing it!)
+							l->update_pending = 0;
+
+							// Treat the connection as if it is pending again
+							l->link_state = LINK_CONN_PENDING;
+							l->conn_interval = l->interval_update;
+							l->win_size = l->win_size_update;
+							l->win_offset = l->win_offset_update;
+
+							// Set linger time and next expected
+							l->linger_time = l->win_size;
+							l->next_expected_event = CLK100NS + l->win_offset;
+
+							// We need to recalculate priorities.
+							do_hop = 1;
+							hop_reason |= F_CONN_UPDATE;
+						}
+						// No connection update pending
+						else {
+							// apply any pending channel map updates
+							if (l->map_update_pending && l->conn_count == l->update_instant) {
+								l->map_update_pending = 0;
+								for (int i = 0; i < 37; i++) {
+									l->channel_map[i] = l->channel_map_update[i];
+								}
+								l->num_used_channels = l->num_used_channels_update;
+							}
+							// Set where the next expected event start will be
+							l->next_expected_event += l->conn_interval;
+							// If our current link needs a hop, physically hop.
+							if (l == le_hdlr.cur_link) {
+								do_hop = 1;
+								hop_reason |= F_INTERVAL;
+							}
+						}
+
+						// Sanitize next_expected_event
+						if (l->next_expected_event >= CLK100NS_MAX) {
+							l->next_expected_event = l->next_expected_event - CLK100NS_MAX;
+						}
+
+						// Reset the interval timer, based on last confirmed event
+						// and next expected event
+						le_multi_reset_interval_timer(l);
+					}
+				}
+			}
+			// Every 1.28 seconds, clear any OLD connections.
+			// 312.5us * 4096
+			if (!(clkn & 0x00000fff)) {
+				le_multi_cleanup();
+			}
+		}
+		// BLE-Multi --------------
+
 		else if (hop_mode == HOP_AFH) {
 			if( (last_hop + hop_timeout) == clkn ) {
 				do_hop = 1;
@@ -843,8 +1171,11 @@ static void msleep(uint32_t millis)
 void legacy_DMA_IRQHandler();
 void le_DMA_IRQHandler();
 void DMA_IRQHandler(void) {
-	if (mode == MODE_BT_FOLLOW_LE)
-		le_DMA_IRQHandler();
+	if (mode == MODE_BT_FOLLOW_LE
+		// BLE-Multi ++++++++++++++
+	   || mode == MODE_BT_MULTIFOLLOW_LE
+   		// BLE-Multi --------------
+		) le_DMA_IRQHandler();
 	else
 		legacy_DMA_IRQHandler();
 
@@ -871,6 +1202,9 @@ void legacy_DMA_IRQHandler()
 	   || mode == MODE_BT_FOLLOW
 	   || mode == MODE_SPECAN
 	   || mode == MODE_BT_FOLLOW_LE
+		// BLE-Multi ++++++++++++++
+	   || mode == MODE_BT_MULTIFOLLOW_LE
+   		// BLE-Multi --------------
 	   || mode == MODE_BT_PROMISC_LE
 	   || mode == MODE_BT_SLAVE_LE
 	   || mode == MODE_RX_GENERIC)
@@ -975,7 +1309,7 @@ static void cc2400_rx()
 		//      |  | |   +-----------> sync word: 8 MSB bits of SYNC_WORD
 		//      |  | +---------------> 2 preamble bytes of 01010101
 		//      |  +-----------------> not packet mode
-			//      +--------------------> un-buffered mode
+		//      +--------------------> un-buffered mode
 		cc2400_set(FSDIV,   channel - 1); // 1 MHz IF
 		cc2400_set(MDMCTRL, mdmctrl);
 	}
@@ -1295,6 +1629,21 @@ void hop(void)
 		channel = btle_next_hop(&le);
 	}
 
+	// BLE-Multi ++++++++++++++
+	else if (hop_mode == HOP_BTLE_MULTI) {
+		// For re-schedules: scheduler_en == 1
+		// For hops only: scheduler_en == 0
+		if (le_hdlr.scheduler_en) {
+			le_multi_scheduler(); // Changes cur_link
+		} else {
+			le_hdlr.scheduler_en = 1; // Re-enable if disabled
+		}
+		// Reset the access address case our link changed
+		cc2400_set(SYNCL, le_hdlr.cur_link->syncl);
+		cc2400_set(SYNCH, le_hdlr.cur_link->synch);
+	}
+	// BLE-Multi --------------
+
 	else if (hop_mode == HOP_DIRECT) {
 		channel = hop_direct_channel;
 	}
@@ -1531,43 +1880,55 @@ void br_transmit()
 }
 #endif
 
+/* BLE-Multi change:
+ * add *link parameter and use link-> instead of le. at the assignments
+ * - link: target link for address change
+ */
 /* set LE access address */
-static void le_set_access_address(u32 aa) {
+static void le_set_access_address(u32 aa, le_state_t *link) {
 	u32 aa_rev;
 
-	le.access_address = aa;
+	link->access_address = aa;
 	aa_rev = rbit(aa);
-	le.syncl = aa_rev & 0xffff;
-	le.synch = aa_rev >> 16;
+	link->syncl = aa_rev & 0xffff;
+	link->synch = aa_rev >> 16;
 }
 
+/* BLE-Multi change:
+ * add *link parameter and use link-> instead of le. at the assignments
+ * - link: target link for address change
+ */
 /* reset le state, called by bt_generic_le and bt_follow_le() */
-void reset_le() {
-	le_set_access_address(0x8e89bed6);     // advertising channel access address
-	le.crc_init  = 0x555555;               // advertising channel CRCInit
-	le.crc_init_reversed = 0xAAAAAA;
-	le.crc_verify = 0;
-	le.last_packet = 0;
+void reset_le(le_state_t *link) {
+	le_set_access_address(0x8e89bed6, link);     // advertising channel access address
+	link->crc_init  = 0x555555;               // advertising channel CRCInit
+	link->crc_init_reversed = 0xAAAAAA;
+	link->crc_verify = 0;
+	link->last_packet = 0;
 
-	le.link_state = LINK_INACTIVE;
+	link->link_state = LINK_INACTIVE;
 
-	le.channel_idx = 0;
-	le.channel_increment = 0;
+	link->channel_idx = 0;
+	link->channel_increment = 0;
 
-	le.conn_epoch = 0;
-	le.interval_timer = 0;
-	le.conn_interval = 0;
-	le.conn_interval = 0;
-	le.conn_count = 0;
+	// BLE-Multi ++++++++++++++
+	for (int i = 0; i < 37; i++) {link->channel_map[i] = 0x00;}
+	// BLE-Multi --------------
 
-	le.win_size = 0;
-	le.win_offset = 0;
+	link->conn_epoch = 0;
+	link->interval_timer = 0;
+	link->conn_interval = 0;
+	link->conn_interval = 0;
+	link->conn_count = 0;
 
-	le.update_pending = 0;
-	le.update_instant = 0;
-	le.interval_update = 0;
-	le.win_size_update = 0;
-	le.win_offset_update = 0;
+	link->win_size = 0;
+	link->win_offset = 0;
+
+	link->update_pending = 0;
+	link->update_instant = 0;
+	link->interval_update = 0;
+	link->win_size_update = 0;
+	link->win_offset_update = 0;
 
 	do_hop = 0;
 }
@@ -1577,6 +1938,80 @@ void reset_le_promisc(void) {
 	memset(&le_promisc, 0, sizeof(le_promisc));
 	le_promisc.smallest_hop_interval = 0xffffffff;
 }
+
+// BLE-Multi +++++++++++++++++++
+/* 
+* Function: le_multi_scheduler
+* ---------------------------
+* Observes all active connections and their priorities and makes a deciscion
+* about which connection to focus on next. The function runs at the end of 
+* every connection event, as well as when the connection handler internal
+* interval timer expires.
+*/
+void le_multi_scheduler(void) {
+	// Disable all timers - we will re-enable them as necessary
+	le_hdlr.conn_event_timer_en = 0;
+	le_hdlr.decision_timer_en = 0;
+
+	// Reset any other necessary stuff
+	le_hdlr.cur_anchor_state = ANCHOR_SEARCH;
+
+	// Find the very NEXT connection event across all connection
+	// (i.e., lowest interval)
+	u32 min_interval = 2147483647;
+	le_state_t *min_link = NULL, *l = NULL;
+	for (int i=0; i < MAX_LINKS; i++) {
+		l = &(le_hdlr.links[i]);
+		// Check that the link exists
+		if (l->link_state != LINK_INACTIVE) {
+			if (l->interval_timer < min_interval) {
+				min_interval = l->interval_timer;
+				min_link = l;
+			}
+		}
+	}
+
+	// TODO: The logic here may have to change depending on how we select 
+	// the next channel
+	if (min_link != NULL) {
+		//Plenty of time until the next event!
+		if (min_interval > MIN_ADV_INTERVALS) {
+			le_hdlr.cur_link = &(le_hdlr.adv_link);
+
+			// Set the timer for when we need to come back!
+			le_hdlr.decision_timer = min_link->interval_timer - MIN_ADV_INTERVALS;
+			le_hdlr.decision_timer_en = 1;
+		}
+		// Not enough time - just go to the correct connection event when
+		// the interval timer expires
+		else {
+			le_hdlr.adv_timer_en = 0;
+			le_hdlr.scheduler_en = 0;
+			le_hdlr.cur_link = min_link;
+			l = le_hdlr.cur_link;
+
+			// Set the connection event timer - once we move to the connection,
+			// how long are we willing to wait for the first frame? It depends...
+
+			// add the chunk of time before the hop
+			le_hdlr.conn_event_timer = l->interval_timer;
+			// Adjust for 312.5us interrupts ... the longer the better here,
+			// so let's take ceiling
+			le_hdlr.conn_event_timer += 
+				DIVIDE_CEIL((2* l->window_widening + l->linger_time), 3125);
+
+			le_hdlr.conn_event_timer += PACKET_OFFSET;
+
+			// Enable the timer
+			le_hdlr.conn_event_timer_en = 1;
+		}
+	} else {
+		// We don't have connections to listen to, listen to advs
+		// No timers necessary... not a care in the world!
+		le_hdlr.cur_link = &(le_hdlr.adv_link);
+	}
+}
+// BLE-Multi -----------------------
 
 /* generic le mode */
 void bt_generic_le(u8 active_mode)
@@ -1588,7 +2023,10 @@ void bt_generic_le(u8 active_mode)
 	modulation = MOD_BT_LOW_ENERGY;
 	mode = active_mode;
 
-	reset_le();
+	// BLE-Multi +++++++++++++++++++++++
+	// reset_le();
+	reset_le(&le);
+	// BLE-Multi -----------------------
 
 	// enable USB interrupts
 	ISER0 = ISER0_ISE_USB;
@@ -1708,7 +2146,15 @@ void bt_generic_le(u8 active_mode)
 	cs_trigger_disable();
 }
 
-
+/*
+* Function: bt_le_sync
+* --------------------
+∗ Time−synced version of bt generic le. This function waits for DMA,
+∗ processes incoming packets, and enqueues the packets to send to the
+∗ host.
+*
+* - active_mode: mode of operation, used to detect if user wants to change it.
+*/
 void bt_le_sync(u8 active_mode)
 {
 	int i;
@@ -1860,7 +2306,11 @@ void bt_le_sync(u8 active_mode)
 			|| (le_jam_count == 1)
 			)
 		{
-			reset_le();
+			// BLE-Multi +++++++++++++++
+			// reset_le();
+			reset_le(&le);
+			// BLE-Multi ---------------
+
 			le_jam_count = 0;
 			TXLED_CLR;
 
@@ -1926,7 +2376,165 @@ cleanup:
 	cs_trigger_disable();
 }
 
+// BLE-Multi +++++++++++++++++++++++
+/*
+* Function: bt_multi_le_sync
+* ----------------------
+* Time-synced version of bt_generic_le for multiple simultaneous connections.
+* This function waits for DMA, processes incoming frames, and enqueues the
+* frames to send to the host. No "active_mode" is provided to the function, as
+* it is assumed that the mode is MODE_BT_MULTIFOLLOW_LE.
+*/
+void bt_multi_le_sync() {
+	int i;
+	int8_t rssi;
+	static int restart_jamming = 0;
 
+	modulation = MOD_BT_LOW_ENERGY;
+	mode = MODE_BT_MULTIFOLLOW_LE;
+
+	// enable USB interrupts
+	ISER0 = ISER0_ISE_USB;
+
+	RXLED_CLR;
+
+	usb_queue_init();
+	dio_ssp_init();
+	dma_init_le();
+	dio_ssp_start();
+
+	// Tune in to the access address of the current channel
+	cc2400_rx_sync(rbit(le_hdlr.cur_link->access_address)); // bit-reversed access address
+
+	// Exit if the mode switches for any reason
+	while (requested_mode == MODE_BT_MULTIFOLLOW_LE) {
+		RXLED_CLR;
+
+		/* Wait for DMA. Meanwhile keep track of RSSI. */
+		/* DMA will tess us that it has a packet for us! */
+		rssi_reset();
+		while ((rx_tc == 0) && (rx_err == 0) && (do_hop == 0) 
+			&& requested_mode == MODE_BT_MULTIFOLLOW_LE)
+			;
+
+		rssi = (int8_t)(cc2400_get(RSSI) >> 8);
+		rssi_min = rssi_max = rssi;
+
+		// User wants to change the mode... let's exit.
+		if (requested_mode != MODE_BT_MULTIFOLLOW_LE) {
+			goto cleanup;
+		}
+
+		// Oops! There was an error with DMA
+		if (rx_err) {
+			status |= DMA_ERROR;
+		}
+
+		// We're done with this channel. Let's move on with our lives.
+		if (do_hop)
+			goto rx_flush;
+
+		/* No DMA transfer? */
+		if (!rx_tc)
+			continue; // Do nothing
+
+		// We assume that rx_tc==1 is what brought us here, let's build a
+		// frame with the info waiting for us in the buffer
+		uint32_t packet[48/4+1] = { 0, };
+		u8 *p = (u8 *)packet;
+		packet[0] = le_hdlr.cur_link->access_address;
+
+		const uint32_t *whit = whitening_word[btle_channel_index(channel)];
+		for (i = 0; i < 4; i+= 4) {
+			uint32_t v = rxbuf1[i+0] << 24
+					   | rxbuf1[i+1] << 16
+					   | rxbuf1[i+2] << 8
+					   | rxbuf1[i+3] << 0;
+			packet[i/4+1] = rbit(v) ^ whit[i/4];
+		}
+
+		unsigned len = (p[5] & 0x3f) + 2;
+		if (len > 39)
+			goto rx_flush; // length is bad, throw it all away
+
+		// transfer the minimum number of bytes from the CC2400
+		// this allows us enough time to resume RX for subsequent packets on the same channel
+		unsigned total_transfers = ((len + 3) + 4 - 1) / 4;
+		if (total_transfers < 11) {
+			while (DMACC0DestAddr < (uint32_t)rxbuf1 + 4 * total_transfers && rx_err == 0)
+				;
+		} else { // max transfers? just wait till DMA's done
+			while (DMACC0Config & DMACCxConfig_E && rx_err == 0)
+				;
+		}
+		DIO_SSP_DMACR &= ~SSPDMACR_RXDMAE;
+
+		// strobe SFSON to allow the resync to occur while we process the packet
+		cc2400_strobe(SFSON);
+
+		// unwhiten the rest of the packet
+		for (i = 4; i < 44; i += 4) {
+			uint32_t v = rxbuf1[i+0] << 24
+					   | rxbuf1[i+1] << 16
+					   | rxbuf1[i+2] << 8
+					   | rxbuf1[i+3] << 0;
+			packet[i/4+1] = rbit(v) ^ whit[i/4];
+		}
+
+		RXLED_SET;
+		// Change the state of connection based on packet contents
+		connection_multi_follow_cb((u8 *)packet);
+
+		// Oh no! The packet was discarded for some reason.
+		// if (packet == NULL) goto rx_flush;
+
+		// Goo packet - queue it up to send to host
+		// disable USB interrupts while we touch USB data structures
+		ICER0 = ICER0_ICE_USB;
+		enqueue(LE_PACKET, (uint8_t *)packet);
+		ISER0 = ISER0_ISE_USB;
+
+		// If we weren't on an Adv channel, let's reset and enable the event timer
+		if (le_hdlr.cur_link != &(le_hdlr.adv_link)) {
+			le_hdlr.conn_event_timer = T_IFS + PACKET_OFFSET;
+			le_hdlr.conn_event_timer_en = 1;
+		}
+
+	rx_flush:
+		// this might happen twice, but it's safe to do so
+		cc2400_strobe(SFSON);
+
+		// flush any excess bytes from the SSP's buffer
+		DIO_SSP_DMACR &= ~SSPDMACR_RXDMAE;
+		while (SSP1SR & SSPSR_RNE) {
+			u8 tmp = (u8)DIO_SSP_DR;
+		}
+
+		if (do_hop)
+			hop();
+
+		dma_init_le();
+		dio_ssp_start();
+
+		// wait till we're in FSLOCK before strobing RX
+		while (!(cc2400_status() & FS_LOCK)) ;
+		cc2400_strobe(SRX);
+		
+		rx_tc = 0;
+		rx_err = 0;
+	} // end of while (requested_mode==active_mode)
+
+cleanup:
+
+	// disable USB interrupts
+	ICER0 = ICER0_ICE_USB;
+
+	// reset the radio completely
+	cc2400_idle();
+	dio_ssp_stop();
+	cs_trigger_disable();
+}
+// BLE-Multi -------------------------------
 
 /* low energy connection following
  * follows a known AA around */
@@ -1990,10 +2598,6 @@ void connection_follow_cb(u8 *packet) {
 	int i;
 	u32 aa = 0;
 
-#define ADV_ADDRESS_IDX 0
-#define HEADER_IDX 4
-#define DATA_LEN_IDX 5
-#define DATA_START_IDX 6
 
 	// u8 *adv_addr = &packet[ADV_ADDRESS_IDX];
 	u8 header = packet[HEADER_IDX];
@@ -2060,30 +2664,23 @@ void connection_follow_cb(u8 *packet) {
 				return;
 			}
 
+			// We are now PENDING, since the first hop has not occurred
 			le.link_state = LINK_CONN_PENDING;
 			le.crc_verify = 0; // we will drop many packets if we attempt to filter by CRC
 
 			for (i = 0; i < 4; ++i)
 				aa |= packet[18+i] << (i*8);
-			le_set_access_address(aa);
+            // We now have an access address
+			le_set_access_address(aa, &le);
 
-#define CRC_INIT (2+4+6+6+4)
 			le.crc_init = (packet[CRC_INIT+2] << 16)
 						| (packet[CRC_INIT+1] << 8)
 						|  packet[CRC_INIT+0];
 			le.crc_init_reversed = rbit(le.crc_init);
-
-#define WIN_SIZE (2+4+6+6+4+3)
 			le.win_size = packet[WIN_SIZE];
-
-#define WIN_OFFSET (2+4+6+6+4+3+1)
 			le.win_offset = packet[WIN_OFFSET];
-
-#define CONN_INTERVAL (2+4+6+6+4+3+1+2)
 			le.conn_interval = (packet[CONN_INTERVAL+1] << 8)
 							 |  packet[CONN_INTERVAL+0];
-
-#define CHANNEL_INC (2+4+6+6+4+3+1+2+2+2+2+5)
 			le.channel_increment = packet[CHANNEL_INC] & 0x1f;
 			le.channel_idx = le.channel_increment;
 
@@ -2093,16 +2690,265 @@ void connection_follow_cb(u8 *packet) {
 	}
 }
 
+// BLE-Multi +++++++++++++++++++++++++++++
+/**
+ * Function: connection_multi_follow_cb
+ *  -------------------------------#
+ * Observes an LE packet and changes link state accordignly (e.g., move from
+ * LINK_CONN_PENDING to LINK_CONNECTED). Used when following multiple connections,
+ * the "active" connection is assumed to be le_hdlr_cur_link.
+ * - packet: pointer to the packet to be analyzed
+ */
+void connection_multi_follow_cb(u8 *packet) {
+	u32 aa = 0;
+
+	// u8 *adv_addr = &packet[ADV_ADDRESS_IDX];
+	u8 header = packet[HEADER_IDX];
+	u8 *data_len = &packet[DATA_LEN_IDX];
+	u8 *data = &packet[DATA_START_IDX];
+	// u8 *crc = &packet[DATA_START_IDX + *data_len];
+
+	// Our working variable for the current link
+	le_state_t *l = NULL;
+
+	// Are we dealing with a connection, or just an adv packet?
+	if (le_hdlr.cur_link == &(le_hdlr.adv_link)) {
+		// If we SEE a connection request for a target of interest, create a
+		// new connection
+		u8 pkt_type = packet[4] & 0x0F;
+		if (pkt_type == 0x05) {
+			// This is a CONNECT_REQ
+			// Master is requesting a connection to the slave
+			uint16_t conn_interval;
+
+			// ignore packets with incorrect length
+			if (*data_len != 34)
+				return;
+
+			// conn interval must be [7.5 ms, 4.0s] in units of 1.25 ms
+			conn_interval = (packet[29] << 8) | packet[28];
+			if (conn_interval < 6 || conn_interval > 3200)
+				return;
+
+			// TODO: Does the connection req match one of the targets?
+
+			// Find some room for our new connection
+			l = NULL;
+			for (int i = 0; i < MAX_LINKS; i++) {
+				if (le_hdlr.links[i].link_state == LINK_INACTIVE) {
+					l = &le_hdlr.links[i];
+					break;
+				}
+			}
+
+			// We don't have room for the connection
+			if (l == NULL) return;
+
+			// We are now PENDING, since the first hop has not occurred
+			l->link_state = LINK_CONN_PENDING;
+			l->crc_verify = 0; // we will drop many packets if we attempt to filter by CRC
+
+			for (int i = 0; i < 4; ++i)
+				aa |= packet[18+i] << (i*8);
+			le_set_access_address(aa, l); // We now have an AA
+
+			l->crc_init = (packet[CRC_INIT+2] << 16)
+						| (packet[CRC_INIT+1] << 8)
+						|  packet[CRC_INIT+0];
+			l->crc_init_reversed = rbit(l->crc_init);
+			l->win_size = packet[WIN_SIZE] * 12500;
+			l->win_offset = 
+				(packet[WIN_OFFSET + 1] << 8 | packet[WIN_OFFSET]) * 12500;
+			l->conn_interval = conn_interval * 12500;
+			l->channel_increment = packet[CHANNEL_INC] & 0x1f;
+			l->channel_idx = 0;
+
+			l->num_used_channels = 0;
+			for (int i = 0; i < 37;  i++) {
+				l->channel_map[i] = 
+					(packet[CHANNEL_MAP + i/8] >> (i % 8)) & 0x01;
+				if (l->channel_map[i] != 0x00) {
+					l->num_used_channels++;
+				}
+			}
+
+			u16 sca = 0;
+			switch ((packet[CHANNEL_INC] >> 5) & 0x07) {
+				case 0: sca = 500; break;
+				case 1: sca = 250; break;
+				case 2: sca = 150; break;
+				case 3: sca = 100; break;
+				case 4: sca = 75; break;
+				case 5: sca = 50; break;
+				case 6: sca = 30; break;
+				case 7: sca = 20; break;
+			}
+			l->sca = sca;
+
+			// At the expiration of the timer, we move to count = 0.
+			l->conn_count = -1;
+
+			// Set the connection's first interval timer (when is the 
+			// window opening?)
+			l->linger_time =  l->win_size;
+			l->last_confirmed_event = CLK100NS;
+			l->next_expected_event = l->last_confirmed_event + 12500 + l->win_offset;
+			if (l->next_expected_event >= CLK100NS_MAX) {
+				l->next_expected_event = l->next_expected_event - CLK100NS_MAX;
+			}
+			le_multi_reset_interval_timer(l);
+
+			TXLED_SET;
+
+			// Run the scheduler immediately
+			do_hop = 1;
+			hop_reason |= F_INTERVAL;
+		}
+		// So it's not a connection request...
+		// Is the advertisement packet an sdv for one of our targets?
+		else {
+			// if we have a target, see if the address matches it.
+			if (le.target_set && !memcmp(le.target, &packet[6], 6)) {
+				// Target matches our set target
+				le_hdlr.cur_adv_state = ADV_CANDIDATE;
+				le_hdlr.adv_timer = 1;
+				le_hdlr.adv_timer_en = 1;
+			}
+		}
+	}
+	else {
+		// Grab the connection, make it easier to work with.
+		l = le_hdlr.cur_link;
+		// TODO: First, let's verify that the packet is valid (if requested!)
+		if (l->crc_verify) {
+		/* */
+		}
+
+		// We received a conn req and are waiting to begin hopping
+		if (l->link_state == LINK_CONN_PENDING) {
+			// We received a packet in the connection pending state,
+			// so now the device *should* be connected
+			l->link_state = LINK_CONNECTED;
+			l->conn_epoch = CLK100NS;
+			l->update_pending = 0;
+
+			// Set the interval timer
+			if (le_hdlr.conn_event_timer < l->window_widening) {
+				l->linger_time = 0;
+			} else if (le_hdlr.conn_event_timer - l->window_widening < l->win_size) {
+				l->linger_time = l->win_size - 
+					(le_hdlr.conn_event_timer - l->window_widening);
+			} else {
+				l->linger_time = l->win_size;
+			}
+			l->last_confirmed_event = l->conn_epoch;
+			l->next_expected_event = l->conn_epoch + l->conn_interval - l->linger_time;
+			l->next_expected_event = l->next_expected_event - PACKET_OFFSET;
+			if (l->next_expected_event >= CLK100NS_MAX) {
+				l->next_expected_event = l->next_expected_event - CLK100NS_MAX;
+			}
+			le_multi_reset_interval_timer(l);
+		}
+
+		// We are already connected and hopping
+		else if (l->link_state == LINK_CONNECTED) {
+			u8 llid =  header & 0x03;
+
+			// LL_CONNECTION_UPDATE_REQ
+			if (llid == 0x03 && data[0] == 0x00) {
+				l->win_size_update = packet[7] * 12500;
+				l->win_offset_update = (packet[8] + ((u16)packet[9] << 8)) * 12500;
+				l->interval_update = (packet[10] + ((u16)packet[11] << 8)) * 12500;
+				l->update_instant = packet[16] + ((u16) packet[17] << 8);
+				if (l->update_instant - l->conn_count < 32767) {
+					l->update_pending = 1;
+				}
+			}
+
+			// LL_CHANNEL_MAP_REQ
+			else if (llid == 0x03 && data[0] == 0x01) {
+				l->num_used_channels_update = 0;
+				for (int i = 0; i < 37; i++) {
+					l->channel_map_update[i] = (packet[7 + i/8] >> (i % 8)) & 0x01;
+					if (l->channel_map_update[i] != 0x00) {
+						l->num_used_channels_update++;
+					}
+				}
+				l->update_instant = packet[12] + ((u16) packet[13] << 8);
+				if (l->update_instant - l->conn_count < 32767) {
+					l->map_update_pending = 1;
+				}
+			}
+
+			// LL_TERMINATE_IND
+			else if (llid == 0x03 && data[0] == 0x02) {
+				// Connection ended... release the link.
+				reset_le(l);
+			};
+
+			// For all DATA CHANNEL frames, see if any is an anchor
+			// is the packet empty?
+			int isEmpty = (*data_len == 0) ? 1 : 0;
+			// is the MD bit set?
+			int isMDClear = (header & 0x10) ? 0 : 1;
+
+			if (le_hdlr.cur_anchor_state == ANCHOR_SEARCH) {
+				// Looking for the first EMPTY packet with MD=0
+				if (isEmpty && isMDClear) {
+					// Found it!
+					le_hdlr.cur_anchor_state = ANCHOR_CANDIDATE;
+					le_hdlr.candidate_anchor = CLK100NS;
+				}
+			} else if (le_hdlr.cur_anchor_state == ANCHOR_CANDIDATE) {
+				// Looking for the second EMPTY packet with MD=0
+				if (isEmpty && isMDClear) {
+					// Found the second - let's set the anchor point,
+					// and calibrate our timer
+					l->linger_time = 0;
+					l->last_confirmed_event = le_hdlr.candidate_anchor;
+					l->next_expected_event = l->last_confirmed_event + l->conn_interval;
+					l->next_expected_event = l->next_expected_event - PACKET_OFFSET;
+					le_multi_reset_interval_timer(l);
+				}
+				le_hdlr.cur_anchor_state = ANCHOR_SEARCH;
+			}
+		}
+	}
+	if (l != NULL) {
+		l->last_packet = CLK100NS;
+	}
+}
+// BLE-Multi -----------------------------------
+
 void le_phy_main(void);
 void bt_follow_le() {
 	le_phy_main();
 
 	/* old method
-	reset_le();
+	reset_le(); // BLE Multi: reset_le(&le);
 	packet_cb = connection_follow_cb;
 	bt_le_sync(MODE_BT_FOLLOW_LE);
 	*/
 }
+
+// BLE-Multi ++++++++++++++++
+// setup function to follow multiple LE connections simultaneously
+void bt_multi_follow_le() {
+    // Reset all of our link states
+    for (int i = 0; i < MAX_LINKS; ++i) {
+        reset_le(&(le_hdlr.links[i]));
+    }
+
+    // The first place we should start is on an advertisment channel
+    le_hdlr.cur_link = &(le_hdlr.adv_link);
+
+    // Start pulling packets out of the air
+    bt_multi_le_sync();
+
+    // All done - go IDLE
+    mode = MODE_IDLE;
+}
+// BLE-Multi ----------------
 
 // issue state change message
 void le_promisc_state(u8 type, void *data, unsigned len) {
@@ -2115,9 +2961,8 @@ void le_promisc_state(u8 type, void *data, unsigned len) {
 	enqueue(LE_PROMISC, (uint8_t*)buf);
 }
 
-// divide, rounding to the nearest integer: round up at 0.5.
-#define DIVIDE_ROUND(N, D) ((N) + (D)/2) / (D)
 
+// Determine the LE hop increment parameter while in promiscuous mode
 void promisc_recover_hop_increment(u8 *packet) {
 	static u32 first_ts = 0;
 	if (channel == 2404) {
@@ -2160,6 +3005,7 @@ void promisc_recover_hop_increment(u8 *packet) {
 	}
 }
 
+// Determine the LE hop interval parameter while in promiscuous mode.
 void promisc_recover_hop_interval(u8 *packet) {
 	static u32 prev_clk = 0;
 
@@ -2214,7 +3060,8 @@ void promisc_follow_cb(u8 *packet) {
 	}
 }
 
-// called when we see an AA, add it to the list
+// In promiscuous mode, when an access address is seen on the wire,
+// add it to the running list of AA candidates.
 void see_aa(u32 aa) {
 	int i, max = -1, killme = -1;
 	for (i = 0; i < AA_LIST_SIZE; ++i)
@@ -2317,7 +3164,7 @@ int cb_le_promisc(char *unpacked) {
 	// once we see an AA 5 times, start following it
 	for (i = 0; i < AA_LIST_SIZE; ++i) {
 		if (le_promisc.active_aa[i].count > 3) {
-			le_set_access_address(le_promisc.active_aa[i].aa);
+			le_set_access_address(le_promisc.active_aa[i].aa, &le);
 			data_cb = cb_follow_le;
 			packet_cb = promisc_follow_cb;
 			le.crc_verify = 0;
@@ -2330,6 +3177,7 @@ int cb_le_promisc(char *unpacked) {
 	return 1;
 }
 
+// Grab LE packets out of the air while in promiscuous mode.
 void bt_promisc_le() {
 	while (requested_mode == MODE_BT_PROMISC_LE) {
 		reset_le_promisc();
@@ -2618,6 +3466,112 @@ void led_specan()
 	}
 }
 
+/**
+ * Function: le_multi_reset_interval_timer
+ * -----------------------------
+ * Reset the connection's interval timer based on whether an anchor
+ * and/or epoch ar present
+ * @param l target link
+ */
+void le_multi_reset_interval_timer(le_state_t *l) {
+    u32 now = CLK100NS;
+
+    // Calculate window_widening for the current link, accounting
+    // for a clock reset
+    if (l->next_expected_event < l->last_confirmed_event) {
+        l->window_widening = CLK100NS_MAX
+                - l->last_confirmed_event + l->next_expected_event;
+    } else {
+        l->window_widening = l->next_expected_event - l->last_confirmed_event;
+    }
+    l->window_widening = l->window_widening * (UBERTOOTH_CLOCK_PPM + l->sca);
+    l->window_widening = DIVIDE_CEIL(l->window_widening, 1000000);
+
+    u32 next_minus_window = 0;
+    // IT = (nextEventStart - wideningWindow) - now;
+    // Handle clock rollover cases, first for the window, then for the current
+    // time "now"
+    if (l->next_expected_event < l->window_widening) {
+        next_minus_window = CLK100NS_MAX - l->window_widening + l->next_expected_event;
+    } else {
+        next_minus_window = l->next_expected_event - l->window_widening;
+    }
+
+    if (next_minus_window < now) {
+        l->interval_timer = (CLK100NS_MAX - now) + next_minus_window;
+    } else {
+        l-> interval_timer = (next_minus_window -now);
+    }
+
+    // Adjust for 312.5 us interrupts, truncating down... we want to be
+    // on the short side
+    l->interval_timer = l->interval_timer / 3125;
+
+    // Account for the fact that we observe the packet at its END.
+    l->interval_timer = l->interval_timer - PACKET_OFFSET;
+}
+
+/**
+ * Function: le_multi_cleanup
+ * -------------
+ * Gets rid of stale connections
+ */
+void le_multi_cleanup(void) {
+    // Drop any stale connections
+    le_state_t *l = NULL;
+    u32 now = CLK100NS, elapsed = 0;
+    for (int i = 0; i < MAX_LINKS; i++) {
+        l = &(le_hdlr.links[i]);
+        if (l->link_state != LINK_INACTIVE) {
+            // Our window is just too wide... get rid of the connection!
+            if (l->window_widening >= l->conn_interval / 4) {
+                reset_le(l);
+                do_hop = 1; // In case this connection was next/active
+            }
+
+            // Calculate time elapsed since the last packet
+            if (now < l->last_packet) {
+                elapsed = (CLK100NS_MAX - l->last_packet) + now;
+            } else {
+                elapsed = now - l->last_packet;
+            }
+
+            // It's been too long since the last packet, get rid
+            // of the connection
+            if (elapsed >= MAX_INACTIVE_LINK_TIME * 10000000) {
+                reset_le(l);
+                do_hop = 1; // in case this connection was next/active
+            }
+        }
+    }
+}
+
+/**
+ * Function: le_multi_update_adv_state
+ * --------------------
+ * Progress the advertisement state when the timer expires.
+ */
+void le_multi_update_adv_state(void) {
+    le_state_t *a = &(le_hdlr.adv_link);
+
+    if (le_hdlr.cur_adv_state == ADV_CANDIDATE) {
+        if (a->channel_idx == 37) {
+            a->channel_idx = 38;
+            le_hdlr.adv_timer = 32; // 10 ms
+        } else if (a->channel_idx == 38) {
+            a->channel_idx = 39;
+            le_hdlr.adv_timer = 32; // 10 ms
+        } else {
+            a->channel_idx = 37;
+            le_hdlr.cur_adv_state = ADV_SEARCH;
+            le_hdlr.adv_timer_en = 0;
+        }
+    } else {
+        a->channel_idx = 37;
+        le_hdlr.adv_timer_en = 0;
+    }
+}
+
 int main()
 {
 	// enable all fault handlers (see fault.c)
@@ -2663,6 +3617,13 @@ int main()
 					mode = MODE_BT_FOLLOW_LE;
 					bt_follow_le();
 					break;
+
+				// BLE-Multi ++++++++++++++++
+				case MODE_BT_MULTIFOLLOW_LE:
+					bt_multi_follow_le();
+					break;
+				// BLE-Multi ----------------
+				
 				case MODE_BT_PROMISC_LE:
 					bt_promisc_le();
 					break;

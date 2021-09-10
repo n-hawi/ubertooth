@@ -32,6 +32,10 @@
  * It advances 3200 times per second.  Two clkn periods make a Bluetooth time
  * slot.
  */
+// BLE-Multi ++++++++++++++
+#define UBERTOOTH_CLOCK_PPM 20
+#define CLK100NS_MAX 3276800000
+// BLE-Multi --------------
 volatile uint32_t clkn;
 volatile uint32_t last_hop;
 

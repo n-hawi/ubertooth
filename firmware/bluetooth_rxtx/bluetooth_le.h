@@ -25,6 +25,23 @@
 #define ADVERTISING_CHANNELS 3
 #define DATA_CHANNELS 37
 
+// BLE-Multi ++++++++++++++
+// Byte locations of data within every LE packet.
+#define ADV_ADDRESS_IDX 0
+#define HEADER_IDX 4
+#define DATA_LEN_IDX 5
+#define DATA_START_IDX 6
+
+// Byte locations of data within a CONNECT_REQ packet
+#define CRC_INIT (2+4+6+6+4)
+#define WIN_SIZE (2+4+6+6+4+3)
+#define WIN_OFFSET (2+4+6+6+4+3+1)
+#define CONN_INTERVAL (2+4+6+6+4+3+1+2)
+#define CHANNEL_MAP (2+4+6+6+4+3+1+2+2+2+2)
+#define CHANNEL_INC (2+4+6+6+4+3+1+2+2+2+2+5)
+// BLE-Multi --------------
+
+
 typedef enum {
     LINK_INACTIVE,
     LINK_LISTENING,
@@ -45,10 +62,18 @@ typedef struct _le_state_t {
     u8 channel_idx;             // current channel index
     u8 channel_increment;       // amount to hop
 
+	// BLE-Multi ++++++++++++++
+	u8 channel_map[37];			// unused if 0, else used
+	u8 num_used_channels;		// total numbers of used channels
+	// BLE-Multi --------------
+
     u32 conn_epoch;             // reference time for the start of the connection
     u16 volatile interval_timer;// number of intervals remaining before next hop
     u16 conn_interval;          // connection-specific hop interval
     u16 volatile conn_count;    // number of intervals since the start of the connection
+	// BLE-Multi ++++++++++++++
+	u16 sca;					// Master's sleep clock accuracy in PPM (20, 30, 50, 75, 100, 150, 250, 500)
+	// BLE-Multi --------------
 
     u8 win_size;                // window size (max packets per connection)
     u16 win_offset;             // offset of first window from start of connection
@@ -58,6 +83,12 @@ typedef struct _le_state_t {
     u16 interval_update;        // the new hop_internal
     u8 win_size_update;         // the new window size
     u16 win_offset_update;      // the new window offset
+	
+	// BLE-Multi ++++++++++++++
+	int map_update_pending;		// wheter a channel map update is pending
+	u8 channel_map_update[37];	// unused if 0, else used
+	u8 num_used_channels_update;// total number of used channels in the updated map
+	// BLE-Multi --------------
 
     int do_follow;              // 1 if follow connections, 0 to only log advertising packets
 
@@ -65,6 +96,13 @@ typedef struct _le_state_t {
     u8 target_mask[6];          // mask for MAC connection following (byte order reversed)
     int target_set;             // whether a target has been set (default: false)
     u32 last_packet;            // when was the last packet received
+
+	// BLE-Multi ++++++++++++++
+	u32 last_confirmed_event;	// time of the last event start in CLK100NS precision
+	u32 next_expected_event;	// time of next event start in CLK100NS precision
+	u32 linger_time;				// Amount of time we want to wait on a channel until we give up in CLK100NS
+	u32 window_widening;			// Amount of addt'l time we have to listen for to account for clock skew
+	// BLE-Multi --------------
 } le_state_t;
 
 // for handling LE channel maps
@@ -96,6 +134,9 @@ static const u8 hop_interval_lut[] = {
 };
 
 u16 btle_next_hop(le_state_t *le);
+// BLE-Multi ++++++++++++++
+u8 btle_afh_channel_index(le_state_t* le);
+// BLE-Multi --------------
 uint8_t btle_channel_index(uint16_t channel);
 u16 btle_channel_index_to_phys(u8 idx);
 u32 btle_calc_crc(u32 crc_init, u8 *data, int len);
@@ -187,3 +228,22 @@ static const u32 whitening_word[40][12] = {
 	{ 0x5f4a371f, 0x9a9cf685, 0x44c5d6c1, 0xe1de5920, 0xafa51b8f, 0xcd4e7b42,
 	  0x2262eb60, 0xf0ef2c90, 0x57d28dc7, 0x66a73da1, 0x113175b0, 0xf8779648, },
 };
+
+// BLE-Multi ++++++++++++++
+// LE Multi Connection Stuff
+typedef enum {
+	ANCHOR_SEARCH,
+	ANCHOR_CANDIDATE
+} anchor_state_t;
+
+typedef enum {
+	ADV_SEARCH,
+	ADV_CANDIDATE
+} adv_state_t;
+
+#define F_ADVERTISEMENT 0x01
+#define F_CONN_EVENT	0x02
+#define F_DECISION		0x04
+#define F_CONN_UPDATE	0x08
+#define F_INTERVAL		0x10
+// BLE-Multi --------------

@@ -741,6 +741,26 @@ int cmd_btle_sniffing(struct libusb_device_handle* devh, uint8_t do_follow)
 	return 0;
 }
 
+int cmd_btle_multi_sniffing(struct libusb_device_handle* devh, uint8_t do_follow_multi)
+{
+    printf("in the function to send multi\n");
+    int r;
+
+    r = libusb_control_transfer(devh, CTRL_OUT, UBERTOOTH_BTLE_MULTI_SNIFFING, do_follow_multi, 0,
+                                NULL, 0, 1000);
+
+    printf("Returned from the control handler, r = %d\n", r);
+    if (r < 0) {
+        if (r == LIBUSB_ERROR_PIPE) {
+            fprintf(stderr, "control message unsupported\n");
+        } else {
+            show_libusb_error(r);
+        }
+        return r;
+    }
+    return 0;
+}
+
 int cmd_set_afh_map(struct libusb_device_handle* devh, uint8_t* afh_map)
 {
 	uint8_t buffer[LIBUSB_CONTROL_SETUP_SIZE+10];

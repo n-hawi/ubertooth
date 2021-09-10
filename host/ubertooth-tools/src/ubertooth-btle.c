@@ -112,8 +112,11 @@ static void usage(void)
 	printf("\n");
 	printf("    Major modes:\n");
 	printf("\t-f follow connections\n");
-	printf("\t-n don't follow, only print advertisements\n");
-	printf("\t-p promiscuous: sniff active connections\n");
+    // BLE Multi +++++++++++++++++++
+    printf("\t-m follow multiple LE connections\n");
+    // BLE Multi -------------------
+    printf("\t-n don't follow, only print advertisements\n");
+    printf("\t-p promiscuous: sniff active connections\n");
 	printf("\n");
 	printf("\t-a[address] get/set access address (example: -a8e89bed6)\n");
 	printf("\t-s<address> faux slave mode, using MAC addr (example: -s22:44:66:88:aa:cc)\n");
@@ -143,7 +146,10 @@ int main(int argc, char *argv[])
 {
 	int opt;
 	int do_follow, do_no_follow, do_promisc;
-	int do_get_aa, do_set_aa;
+    // BLE Multi +++++++++++++++++++
+    int do_follow_multi;
+    // BLE Multi -------------------
+    int do_get_aa, do_set_aa;
 	int do_crc;
 	int do_adv_index;
 	int do_slave_mode;
@@ -158,14 +164,16 @@ int main(int argc, char *argv[])
 	u32 access_address;
 	uint8_t mac_address[6] = { 0, };
 	uint8_t mac_mask = 0;
-
-	do_follow = do_no_follow = do_promisc = 0;
+    // BLE Multi +++++++++++++++++++
+    do_follow_multi = 0;
+    // BLE Multi -------------------
+    do_follow = do_no_follow = do_promisc = 0;
 	do_get_aa = do_set_aa = 0;
 	do_crc = -1; // 0 and 1 mean set, 2 means get
 	do_adv_index = 37;
 	do_slave_mode = do_target = 0;
 
-	while ((opt=getopt(argc,argv,"a::r:hfnpU:v::A:s:t:x:c:q:jJiI")) != EOF) {
+	while ((opt=getopt(argc,argv,"a::r:hfmnpU:v::A:s:t:x:c:q:jJiI")) != EOF) {
 		switch(opt) {
 		case 'a':
 			if (optarg == NULL) {
@@ -177,9 +185,14 @@ int main(int argc, char *argv[])
 			break;
 		case 'f':
 			do_follow = 1;
-			break;
-		case 'n':
-			do_no_follow = 1;
+            break;
+        // BLE Multi +++++++++++++++++++
+        case 'm':
+            do_follow_multi = 1;
+            break;
+        // BLE Multi -------------------
+        case 'n':
+            do_no_follow = 1;
 			break;
 		case 'p':
 			do_promisc = 1;
@@ -289,8 +302,11 @@ int main(int argc, char *argv[])
 	// cancel following on USR1
 	signal(SIGUSR1, cancel_follow_handler);
 
-	if (do_follow + do_no_follow + do_promisc > 1) {
-		printf("Error: must choose one -f, -n, or -p, pick one pal\n");
+    // BLE Multi +++++++++++++++++++
+    if (do_follow + do_no_follow + do_promisc + do_follow_multi > 1) {
+    //if (do_follow + do_no_follow + do_promisc > 1) {
+    // BLE Multi -------------------
+        printf("Error: must choose one -f, -n, or -p, pick one pal\n");
 		return 1;
 	}
 
@@ -310,9 +326,11 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 	}
-
-	if (do_follow || do_no_follow || do_promisc) {
-		usb_pkt_rx rx;
+    // BLE Multi +++++++++++++++++++
+    //if (do_follow || do_no_follow || do_promisc) {
+	if (do_follow || do_follow_multi || do_no_follow || do_promisc) {
+    // BLE Multi -------------------
+        usb_pkt_rx rx;
 
 		r = cmd_set_jam_mode(ut->devh, jam_mode);
 		if (jam_mode != JAM_NONE && r != 0) {
@@ -321,8 +339,11 @@ int main(int argc, char *argv[])
 		}
 		cmd_set_modulation(ut->devh, MOD_BT_LOW_ENERGY);
 
-		if (do_follow || do_no_follow) {
-			u16 channel;
+        // BLE Multi +++++++++++++++++++
+        if (do_follow || do_follow_multi || do_no_follow) {
+        // if (do_follow || do_no_follow) {
+        // BLE Multi -------------------
+            u16 channel;
 			if (do_adv_index == 37)
 				channel = 2402;
 			else if (do_adv_index == 38)
@@ -330,7 +351,11 @@ int main(int argc, char *argv[])
 			else
 				channel = 2480;
 			cmd_set_channel(ut->devh, channel);
-			cmd_btle_sniffing(ut->devh, do_follow);
+            // BLE Multi +++++++++++++++++++
+            // cmd_btle_sniffing(ut->devh, do_follow);
+            if (do_follow) cmd_btle_sniffing(ut->devh, do_follow);
+            else if (do_follow_multi) cmd_btle_multi_sniffing(ut->devh, do_follow_multi);
+            // BLE Multi -------------------
 		} else {
 			cmd_btle_promisc(ut->devh);
 		}
@@ -395,7 +420,11 @@ int main(int argc, char *argv[])
 	}
 
 	if (!(do_follow || do_no_follow || do_promisc || do_get_aa || do_set_aa ||
-				do_crc >= 0 || do_slave_mode || do_target))
+				do_crc >= 0 || do_slave_mode || do_target
+                // BLE Multi ++++++++++++++
+                || do_follow_multi
+                // BLE Multi --------------
+                ))
 		usage();
 
 	return 0;
