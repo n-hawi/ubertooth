@@ -47,7 +47,7 @@
 
 // BLE-Multi ++++++++++++++
 #define DIVIDE_CEIL(N, D) (1 + ((N-1) / D))
-#define MAX_LINKS 5 				// Max # of links to follow in mut-link LE mode
+#define MAX_LINKS 3 				// Max # of links to follow in mut-link LE mode
 #define MAX_INACTIVE_LINK_TIME 5	// in seconds
 #define MAX_NUM_TARGETS 1
 #define MIN_ADV_INTERVALS 3
