@@ -3,6 +3,7 @@
 *.so.*
 *.pyc
 host/build/*
+host/cmake-build-debug/*
 
 # firmware build output
 *.bin
@@ -53,4 +54,5 @@ ID
 *.sublime-project
 *.sublime-workspace
 .vscode
+.idea
 
