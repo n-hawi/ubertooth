@@ -125,6 +125,9 @@ uint32_t cmd_get_clock(struct libusb_device_handle* devh);
 int cmd_set_afh_map(struct libusb_device_handle* devh, u8* afh_map);
 int cmd_clear_afh_map(struct libusb_device_handle* devh);
 int cmd_btle_sniffing(struct libusb_device_handle* devh, uint8_t do_follow);
+// BLE Multi +++++++++++++++++++
+int cmd_btle_multi_sniffing(struct libusb_device_handle* devh, uint8_t do_follow_multi);
+// BLE Multi -------------------
 u32 cmd_get_access_address(struct libusb_device_handle* devh);
 int cmd_set_access_address(struct libusb_device_handle* devh, u32 access_address);
 int cmd_do_something(struct libusb_device_handle *devh, unsigned char *data, int len);
