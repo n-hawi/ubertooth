@@ -110,6 +110,9 @@ enum ubertooth_usb_commands {
 	UBERTOOTH_RX_GENERIC         = 67,
 	UBERTOOTH_TX_GENERIC_PACKET  = 68,
 	UBERTOOTH_FIX_CLOCK_DRIFT    = 69,
+    // BLE Multi +++++++++++++++++++++++++
+    UBERTOOTH_BTLE_MULTI_SNIFFING= 74,
+    // BLE Multi -------------------------
 };
 
 enum jam_modes {
@@ -142,6 +145,9 @@ enum hop_mode {
 	HOP_BTLE      = 3,
 	HOP_DIRECT    = 4,
 	HOP_AFH       = 5,
+	// BLE Multi +++++++++++++
+	HOP_BTLE_MULTI= 6,
+	// BLE Multi -------------
 };
 
 enum usb_pkt_status {

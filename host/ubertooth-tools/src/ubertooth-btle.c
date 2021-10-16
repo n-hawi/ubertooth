@@ -68,7 +68,11 @@ static void usage(void)
 	printf("\n");
 	printf("    Major modes:\n");
 	printf("\t-f follow connections\n");
+    // BLE Multi +++++++++++++++++++
+    printf("\t-m follow multiple LE connections\n");
+    // BLE Multi -------------------
 	printf("\t-p promiscuous: sniff active connections\n");
+    printf("\n");
 	printf("\t-a[address] get/set access address (example: -a8e89bed6)\n");
 	printf("\t-s<address> faux slave mode, using MAC addr (example: -s22:44:66:88:aa:cc)\n");
 	printf("\t-t<address> set connection following target (example: -t22:44:66:88:aa:cc)\n");
@@ -96,6 +100,9 @@ int main(int argc, char *argv[])
 {
 	int opt;
 	int do_follow, do_promisc;
+    // BLE Multi +++++++++++++++++++
+    int do_follow_multi;
+    // BLE Multi -------------------
 	int do_get_aa, do_set_aa;
 	int do_crc;
 	int do_adv_index;
@@ -111,13 +118,19 @@ int main(int argc, char *argv[])
 	u32 access_address;
 	uint8_t mac_address[6] = { 0, };
 
+    // BLE Multi +++++++++++++++++++
+    do_follow_multi = 0;
+    // BLE Multi -------------------
 	do_follow = do_promisc = 0;
 	do_get_aa = do_set_aa = 0;
 	do_crc = -1; // 0 and 1 mean set, 2 means get
 	do_adv_index = 37;
 	do_slave_mode = do_target = 0;
 
-	while ((opt=getopt(argc,argv,"a::r:hfpU:v::A:s:t:x:c:q:jJiI")) != EOF) {
+    // BLE Multi +++++++++++++++++++
+	while ((opt=getopt(argc,argv,"a::r:hfmpU:v::A:s:t:x:c:q:jJiI")) != EOF) {
+	//while ((opt=getopt(argc,argv,"a::r:hfpU:v::A:s:t:x:c:q:jJiI")) != EOF) {
+    // BLE Multi ------------------
 		switch(opt) {
 		case 'a':
 			if (optarg == NULL) {
@@ -130,6 +143,11 @@ int main(int argc, char *argv[])
 		case 'f':
 			do_follow = 1;
 			break;
+        // BLE Multi +++++++++++++++++++
+        case 'm':
+            do_follow_multi = 1;
+            break;
+        // BLE Multi -------------------
 		case 'p':
 			do_promisc = 1;
 			break;
@@ -233,8 +251,12 @@ int main(int argc, char *argv[])
 	/* Clean up on exit. */
 	register_cleanup_handler(ut, 1);
 
-	if (do_follow && do_promisc) {
-		printf("Error: must choose either -f or -p, one or the other pal\n");
+    // BLE Multi +++++++++++++++++++
+    if (do_follow + do_promisc + do_follow_multi > 1) {
+    //if (do_follow + do_promisc > 1) {
+        printf("Error: must choose either -f or -m or -p\n");
+        //printf("Error: must choose either -f or -p, one or the other pal\n");
+        // BLE Multi -------------------
 		return 1;
 	}
 
@@ -248,8 +270,11 @@ int main(int argc, char *argv[])
 		}
 		cmd_set_modulation(ut->devh, MOD_BT_LOW_ENERGY);
 
-		if (do_follow) {
-			u16 channel;
+        // BLE Multi +++++++++++++++++++
+        if (do_follow || do_follow_multi) {
+        // if (do_follow) {
+        // BLE Multi -------------------
+            u16 channel;
 			if (do_adv_index == 37)
 				channel = 2402;
 			else if (do_adv_index == 38)
@@ -257,7 +282,11 @@ int main(int argc, char *argv[])
 			else
 				channel = 2480;
 			cmd_set_channel(ut->devh, channel);
-			cmd_btle_sniffing(ut->devh, 2);
+            // BLE Multi +++++++++++++++++++
+            // cmd_btle_sniffing(ut->devh, 2);
+            if (do_follow) cmd_btle_sniffing(ut->devh, do_follow);
+            else if (do_follow_multi) cmd_btle_multi_sniffing(ut->devh, do_follow_multi);
+            // BLE Multi -------------------
 		} else {
 			cmd_btle_promisc(ut->devh);
 		}
@@ -324,7 +353,11 @@ int main(int argc, char *argv[])
 	}
 
 	if (!(do_follow || do_promisc || do_get_aa || do_set_aa ||
-				do_crc >= 0 || do_slave_mode || do_target))
+				do_crc >= 0 || do_slave_mode || do_target
+                // BLE Multi ++++++++++++++
+                || do_follow_multi
+                // BLE Multi --------------
+                ))
 		usage();
 
 	return 0;

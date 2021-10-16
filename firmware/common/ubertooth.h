@@ -42,13 +42,25 @@ enum operating_modes {
 	MODE_LED_SPECAN    = 7,
 	MODE_BT_FOLLOW     = 8,
 	MODE_BT_FOLLOW_LE  = 9,
-	MODE_BT_PROMISC_LE = 10,
-	MODE_RESET         = 11,
-	MODE_BT_SLAVE_LE   = 12,
-	MODE_EGO           = 13,
-	MODE_AFH           = 14,
-	MODE_RX_GENERIC    = 15,
-	MODE_TX_GENERIC    = 16,
+	// BLE Multi ++++++++++++++
+	MODE_BT_MULTIFOLLOW_LE = 10,
+	MODE_BT_PROMISC_LE = 11,
+	MODE_RESET         = 12,
+	MODE_BT_SLAVE_LE   = 13,
+	MODE_EGO           = 14,
+	MODE_AFH           = 15,
+	MODE_RX_GENERIC    = 16,
+	MODE_TX_GENERIC    = 17,
+	MODE_XMAS          = 18,
+	// MODE_BT_PROMISC_LE = 10,
+	// MODE_RESET         = 11,
+	// MODE_BT_SLAVE_LE   = 12,
+	// MODE_EGO           = 13,
+	// MODE_AFH           = 14,
+	// MODE_RX_GENERIC    = 15,
+	// MODE_TX_GENERIC    = 16,
+	// MODE_XMAS          = 17,
+	// BLE Multi --------------
 };
 
 /* hardware identification number */
