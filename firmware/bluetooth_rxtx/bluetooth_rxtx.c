@@ -2158,7 +2158,7 @@ void bt_generic_le(u8 active_mode)
 */
 void bt_le_sync(u8 active_mode)
 {
-	int i;
+    int i;
 	int8_t rssi;
 	static int restart_jamming = 0;
 
@@ -2935,6 +2935,8 @@ void bt_follow_le() {
 // BLE-Multi ++++++++++++++++
 // setup function to follow multiple LE connections simultaneously
 void bt_multi_follow_le() {
+    le_phy_main();
+    /*
     // Reset all of our link states
     for (int i = 0; i < MAX_LINKS; ++i) {
         reset_le(&(le_hdlr.links[i]));
@@ -2948,6 +2950,7 @@ void bt_multi_follow_le() {
 
     // All done - go IDLE
     mode = MODE_IDLE;
+     */
 }
 // BLE-Multi ----------------
 
@@ -3621,6 +3624,7 @@ int main()
 
 				// BLE-Multi ++++++++++++++++
 				case MODE_BT_MULTIFOLLOW_LE:
+                    mode = MODE_BT_MULTIFOLLOW_LE;
 					bt_multi_follow_le();
 					break;
 				// BLE-Multi ----------------
