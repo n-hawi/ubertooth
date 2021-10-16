@@ -42,7 +42,7 @@
 
 // BLE-Multi ++++++++++++++
 #define DIVIDE_CEIL(N, D) (1 + ((N-1) / D))
-#define MAX_LINKS 3 				// Max # of links to follow in mut-link LE mode
+#define MAX_LINKS 5 				// Max # of links to follow in mut-link LE mode
 #define MAX_INACTIVE_LINK_TIME 5	// in seconds
 #define MAX_NUM_TARGETS 1
 #define MIN_ADV_INTERVALS 3
@@ -741,14 +741,13 @@ static int vendor_request_handler(uint8_t request, uint16_t* request_params, uin
 
 	// BLE-Multi ++++++++++++++
 	case UBERTOOTH_BTLE_MULTI_SNIFFING:
-		le.do_follow = request_params[0];
 		*data_len = 0;
 
 		do_hop = 0;
 		hop_mode = HOP_BTLE_MULTI;
 		requested_mode = MODE_BT_MULTIFOLLOW_LE;
 
-		usb_queue_init();
+		queue_init();
 		cs_threshold_calc_and_set(channel);
 		break;
 	// BLE-Multi --------------
@@ -2298,7 +2297,7 @@ void bt_multi_le_sync() {
 
 	RXLED_CLR;
 
-	usb_queue_init();
+	queue_init();
 	dio_ssp_init();
 	dma_init_le();
 	dio_ssp_start();
@@ -2834,7 +2833,7 @@ void connection_multi_follow_cb(u8 *packet) {
 // BLE-Multi -----------------------------------
 
 void bt_follow_le() {
-	reset_le();
+	reset_le(&le);
 	packet_cb = connection_follow_cb;
 	bt_le_sync(MODE_BT_FOLLOW_LE);
 
