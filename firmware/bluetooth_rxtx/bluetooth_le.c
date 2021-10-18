@@ -206,7 +206,7 @@ void le_dewhiten(uint8_t *data, unsigned size, unsigned channel) {
 /*
  * Parse a channel map and populate the le_channel_remapping_t struct.
  */
-int le_parse_channel_map(uint8_t *channel_map, le_channel_remapping_t *remapping) {
+void le_parse_channel_map(uint8_t *channel_map, le_channel_remapping_t *remapping) {
 	unsigned i, j, byte;
 	unsigned idx = 0;
 
@@ -230,7 +230,6 @@ int le_parse_channel_map(uint8_t *channel_map, le_channel_remapping_t *remapping
 				break;
 		}
 	}
-    return 2;
 }
 
 /*

@@ -1279,7 +1279,7 @@ void le_jam(void) {
 /* TODO - return whether hop happened, or should caller have to keep
  * track of this? */
 void hop(void)
-{   
+{
     //static count = 0;
 	do_hop = 0;
 	last_hop = clkn;
@@ -1319,17 +1319,17 @@ void hop(void)
 		channel = btle_next_hop(&le);
         u8 index = btle_channel_index(channel);
 
+///////////////////////////////////////////////// added
         if(mapped == 1){
             if(ch_map_hopped[index] != 1){
                 u8 index2 = index % total_channel;
                 channel = remapped_ch[index2];
-				remapped = 1;
+                remapped = 1;
             }
 			else {
-				remapped = 0;		
-			}
-            hopping_channel++; 
-///////////////////////////////////////////////// added
+                remapped = 0;
+            }
+            hopping_channel++;
 			if(channel_hopped > 0){
 			    if(abs(hopping_channel - channel_hopped) > 3 && remapped == 0){
 			        debug_printf("recalculating ch map %d\n",abs(hopping_channel - channel_hopped));
@@ -1344,19 +1344,19 @@ void hop(void)
 			    hopping_channel = 0;
 			    channel_hopped = 0;
 			}
-////////////////////////////////////////////////// added
             if(hopping_channel> 37){
-               hopping_channel = 0;
-               channel_hopped = 0;             
-            }     
+                hopping_channel = 0;
+                channel_hopped = 0;
+            }
         }
         // debug_printf("Channel: %d Mapped: %d\n", btle_channel_index(channel), mapped);
         /*
         else if(mapped == 2){
             index = le_map_channel(index, &remapping);
-            channel = btle_channel_index_to_phys(index);  
+            channel = btle_channel_index_to_phys(index);
         }*/
-	}
+////////////////////////////////////////////////// added
+    }
 
 	else if (hop_mode == HOP_DIRECT) {
 		channel = hop_direct_channel;
@@ -1905,7 +1905,7 @@ void bt_le_sync(u8 active_mode)
                 count3 = 0;
             }      
         }
-		// disable USB interrupts while we tpacketouch USB data structures
+		// disable USB interrupts while we touch USB data structures
 		ICER0 = ICER0_ICE_USB;
 		enqueue(LE_PACKET, (uint8_t *)packet);
 		ISER0 = ISER0_ISE_USB;
@@ -2078,7 +2078,20 @@ u8 rearrange_channel(uint16_t array[]){
  * Called when we receive a packet in connection following mode.
  */
 
+// divide, rounding to the nearest integer: round up at 0.5.
 #define DIVIDE_ROUND(N, D) ((N) + (D)/2) / (D)
+
+// issue state change message
+void le_promisc_state(u8 type, void *data, unsigned len) {
+    u8 buf[50] = { 0, };
+    if (len > 49)
+        len = 49;
+
+    buf[0] = type;
+    memcpy(&buf[1], data, len);
+    enqueue(LE_PROMISC, (uint8_t*)buf);
+}
+
 
 void connection_follow_cb(u8 *packet) {
 
@@ -2131,19 +2144,6 @@ void le_phy_main(void);
 void bt_follow_le() {
 	le_phy_main();
 }
-
-// issue state change message
-void le_promisc_state(u8 type, void *data, unsigned len) {
-	u8 buf[50] = { 0, };
-	if (len > 49)
-		len = 49;
-
-	buf[0] = type;
-	memcpy(&buf[1], data, len);
-	enqueue(LE_PROMISC, (uint8_t*)buf);
-}
-
-// divide, rounding to the nearest integer: round up at 0.5.
 
 
 //sopan

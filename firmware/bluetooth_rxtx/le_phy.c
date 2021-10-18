@@ -13,6 +13,7 @@
 #include "ubertooth_dma.h"
 #include "ubertooth_usb.h"
 #include "bluetooth_le.h"
+#include "debug_uart.h"
 #include "queue.h"
 
 // current time, from timer1
@@ -970,7 +971,8 @@ void le_phy_main(void) {
 	le_cc2400_init_rf();
 
 	cancel_follow = 0;
-	debug_uart_init(0);
+	//debug_uart_init(0);
+
 	while (requested_mode == MODE_BT_FOLLOW_LE) {
 		le_rx_t *packet = NULL;
 		if (queue_remove(&packet_queue, (void **)&packet)) {
